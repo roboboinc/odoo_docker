@@ -1,0 +1,37 @@
+version: '3.1'
+services:
+    odoo:
+      container_name: odoo
+      image: odoo:latest
+      platform: linux/amd64
+      volumes:
+          - ./addons-extra:/mnt/extra-addons
+          - ./config:/etc/odoo
+          - odoo-web-data:/var/lib/odoo
+      ports:
+          - "8069:8069"
+      env_file:
+          - .env
+    nginx:
+      container_name: nginx
+      image: nginx:latest
+      restart: unless-stopped
+      ports:
+          - 80:80
+          - 443:443
+      volumes:
+          - ./nginx/conf:/etc/nginx/conf.d
+          - ./certbot/conf:/etc/nginx/ssl
+          - ./certbot/data:/var/www/html
+    certbot:
+      container_name: certbot
+      image: certbot/certbot:latest
+      env_file:
+          - .env
+      command: certonly --webroot --webroot-path=/var/www/html --email ${CERTBOT_EMAIL} --agree-tos --no-eff-email -d ${CERTBOT_DOMAIN}
+      volumes:
+          - ./certbot/conf:/etc/letsencrypt
+          - ./certbot/logs:/var/log/letsencrypt
+          - ./certbot/data:/var/www/html
+volumes:
+    odoo-web-data:
