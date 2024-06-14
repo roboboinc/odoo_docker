@@ -1,0 +1,37 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches:
+      - staging
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    - name: Install AWS CLI
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y awscli
+
+    - name: Update code on production server via AWS SSM
+      run: |
+        instance_id="i-038549e233856bdd5"
+        command_id=$(aws ssm send-command \
+          --document-name "AWS-RunShellScript" \
+          --targets "Key=instanceIds,Values=$instance_id" \
+          --parameters 'commands=["sudo -u root sh -c "cd /home/ubuntu/services/odoo_custom_modules/linhaverde_odoo && git pull origin staging && cd /home/ubuntu/services/odoo && docker-compose restart \""]' \
+          --query "Command.CommandId" \
+          --output text)
+        echo "SSM Command ID: $command_id"
