@@ -2,7 +2,10 @@ version: '3.1'
 services:
     odoo:
       container_name: odoo
-      image: odoo:latest
+    #   image: odoo:latest
+      build:
+        context: .
+        dockerfile: Dockerfile
       platform: linux/amd64
       volumes:
           - ./addons-extra:/mnt/extra-addons
@@ -21,17 +24,6 @@ services:
           - 443:443
       volumes:
           - ./nginx/conf:/etc/nginx/conf.d
-          - ./certbot/conf:/etc/nginx/ssl
-          - ./certbot/data:/var/www/html
-    certbot:
-      container_name: certbot
-      image: certbot/certbot:latest
-      env_file:
-          - .env
-      command: certonly --webroot --webroot-path=/var/www/html --email ${CERTBOT_EMAIL} --agree-tos --no-eff-email -d ${CERTBOT_DOMAIN}
-      volumes:
-          - ./certbot/conf:/etc/letsencrypt
-          - ./certbot/logs:/var/log/letsencrypt
-          - ./certbot/data:/var/www/html
+
 volumes:
     odoo-web-data:
