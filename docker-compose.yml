@@ -26,6 +26,8 @@ services:
           - 443:443
       volumes:
           - ./nginx/conf:/etc/nginx/conf.d
+          - ./nginx/ssl:/etc/letsencrypt  # SSL certificates will be stored here
+          - ./nginx/ssl-dhparams:/etc/ssl/certs/dhparam.pem  # Diffie-Hellman parameters (for security)
     certbot:
       image: certbot/certbot
       container_name: certbot
