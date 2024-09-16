@@ -16,7 +16,7 @@ services:
       env_file:
           - .env
       mem_limit: 2g
-      mem_reservation: .5g
+
     nginx:
       container_name: nginx
       image: nginx:latest
@@ -25,19 +25,16 @@ services:
           - 80:80
           - 443:443
       volumes:
-          - ./nginx/conf:/etc/nginx/conf.d/:ro
-          - ./nginx/ssl:/etc/letsencrypt  # SSL certificates will be stored here
-          - ./nginx/html:/var/www/certbot/:ro  # Webroot for Certbot challenges
-          - ./nginx/ssl-dhparams:/etc/ssl/certs/dhparam.pem  # Diffie-Hellman parameters (for security)
+        - ./nginx/conf/:/etc/nginx/conf.d/:ro
+        - ./certbot/conf:/etc/letsencrypt/ssl  # SSL certificates will be stored here
+        - ./certbot/www:/var/www/certbot/:ro  # Webroot for Certbot challenges
+        - ./nginx/ssl-dhparams:/etc/ssl/certs  # Diffie-Hellman parameters (for security) 
+
     certbot:
-      image: certbot/certbot
-      container_name: certbot
+      image: certbot/certbot:latest
       volumes:
-        - ./nginx/ssl:/etc/letsencrypt/:rw
-        - ./nginx/html:/var/www/certbot/:rw  # Webroot to store challenge files
-        - ./nginx/ssl-dhparams:/etc/ssl/certs/dhparam.pem
-      entrypoint: "/bin/sh -c 'trap exit TERM; while :; do sleep 12h & wait $${!}; certbot renew; done;'"
-      command: certonly --webroot --webroot-path=/var/www/html --email it@robobo.org --agree-tos --no-eff-email --staging -d odoo.robobo.org
+        - ./certbot/www/:/var/www/certbot/:rw
+        - ./certbot/conf/:/etc/letsencrypt/:rw
 
 volumes:
     odoo-web-data:
