@@ -18,6 +18,19 @@ RUN pip3 install --upgrade pip setuptools wheel Cython==0.29.33
 # Install specific Python packages and handle numpy incompatibility
 RUN pip3 install pandas==2.0.3 xlrd==1.2.0 numpy==1.24.3
 
+# Install wkhtmltopdf and dependencies
+RUN apt-get install -y \
+    curl \
+    wget \
+    libxrender1 \
+    libxext6 \
+    libssl-dev \
+    libfontconfig1 \
+    xfonts-base \
+    xfonts-75dpi \
+    fonts-dejavu-core \
+    wkhtmltopdf
+
 USER odoo
 
 # Copy custom modules from the local directory to the Odoo addons directory
