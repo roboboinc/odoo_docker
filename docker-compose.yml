@@ -1,41 +1,53 @@
 version: '3'
 services:
-    odoo:
-      container_name: odoo
-    #   image: odoo:latest
-      build:
-        context: .
-        dockerfile: Dockerfile
-      # platform: linux/amd64
-      volumes:
-          - ./addons-extra:/mnt/extra-addons
-          - ./config:/etc/odoo
-          - odoo-web-data:/var/lib/odoo
-      ports:
-          - "8069:8069"
-      env_file:
-          - .env
-      mem_limit: 2g
-      mem_reservation: 1g 
-
-    nginx:
-      container_name: nginx
-      image: nginx:latest
-      restart: unless-stopped
-      ports:
-          - 80:80
-          - 443:443
-      volumes:
-        - ./nginx/conf/:/etc/nginx/conf.d/:ro
-        - ./certbot/conf:/etc/letsencrypt/ssl  # SSL certificates will be stored here
-        - ./certbot/www:/var/www/certbot/:ro  # Webroot for Certbot challenges
-        - ./nginx/ssl-dhparams:/etc/ssl/certs  # Diffie-Hellman parameters (for security) 
-
-    certbot:
-      image: certbot/certbot:latest
-      volumes:
-        - ./certbot/www/:/var/www/certbot/:rw
-        - ./certbot/conf/:/etc/letsencrypt/:rw
+  odoo:
+    container_name: odoo
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # platform: linux/amd64
+    volumes:
+        - ./addons-extra:/mnt/extra-addons
+        - ./config:/etc/odoo
+        - odoo-web-data:/var/lib/odoo
+    env_file:
+        - .env
+    mem_limit: 2g
+    mem_reservation: 1g
+    networks:
+      - traefik-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.services.odoo.loadbalancer.server.port=8069"
+      # Middleware for odoo.robobo.org
+      - "traefik.http.routers.odoo-robobo.rule=Host(`odoo.robobo.org`)"
+      - "traefik.http.middlewares.robobo-headers.headers.customrequestheaders.X-Odoo-dbfilter=robobo"
+      - "traefik.http.routers.odoo-robobo.middlewares=gzip,sslheader,limit,robobo-headers"
+      - "traefik.http.routers.odoo-robobo.entrypoints=websecure"
+      # Middleware for odoo.linhafala.org.mz
+      - "traefik.http.routers.odoo-lfc.rule=Host(`odoo.linhafala.org.mz`) || Host(`odoo.app.linhafala.org.mz`)"
+      - "traefik.http.middlewares.lfc-headers.headers.customrequestheaders.X-Odoo-dbfilter=lfc_final"
+      - "traefik.http.routers.odoo-lfc.middlewares=gzip,sslheader,limit,lfc-headers"
+      - "traefik.http.routers.odoo-lfc.entrypoints=websecure"
+      # Middleware for client-demo.odoo.robobo.org.conf
+      - "traefik.http.routers.odoo-demos.rule=Host(`client-demo.odoo.robobo.org`)"
+      - "traefik.http.middlewares.demos-headers.headers.customrequestheaders.X-Odoo-dbfilter=maisvida"
+      - "traefik.http.routers.odoo-demos.middlewares=gzip,sslheader,limit,demos-headers"
+      - "traefik.http.routers.odoo-demos.entrypoints=websecure"
+      #================== middlewares ==================================
+      - "traefik.http.middlewares.gzip.compress=true"
+      - "traefik.http.middlewares.sslheader.headers.customrequestheaders.X-Forwarded-Proto=https"
+      - "traefik.http.middlewares.limit.buffering.memRequestBodyBytes=20971520"
+      - "traefik.http.middlewares.limit.buffering.maxRequestBodyBytes=20971520"
+      - "traefik.http.middlewares.odoo-headers.headers.customrequestheaders.X-Real-IP=remote_addr"
+      - "traefik.http.middlewares.odoo-headers.headers.customrequestheaders.X-Forwarded-For=remote_addr"
+      - "traefik.http.middlewares.odoo-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
+      - "traefik.http.middlewares.odoo-headers.headers.customrequestheaders.Host=host"
+      - "traefik.http.routers.odoo.middlewares=odoo-headers"
 
 volumes:
     odoo-web-data:
+
+networks:
+  traefik-network:
+    external: true
