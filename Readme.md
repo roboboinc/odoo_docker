@@ -19,3 +19,13 @@ The main purpose is to enable a user to deploy an Odoo instance with an external
 6. Restart nginx with the command `docker restart nginx`
 
 You should have your app running and with an SSL on the configured DOmain.
+
+
+### IMPORTANT
+If encontering Cache ir_attachment: IOError: [Errno 2] No such file or directory or related error:
+Make sure to run PG Admin container then:
+1 - through GUI or cmd 
+1.1 docker-compose exec db bash
+1.2 psql -U odoo -d lv2 #lv2 as example db we want to fix
+1.3 DELETE FROM public.ir_attachment;
+1.4 Go to UI: Apps, search for Base and Upgrade
