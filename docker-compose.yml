@@ -1,21 +1,21 @@
-version: '3'
+
 services:
   odoo:
-    container_name: odoo
-    build:
-      context: .
-      dockerfile: Dockerfile
-    # platform: linux/amd64
+    #container_name: odoo
+    image: 127.0.0.1:5000/odoostack
+    build: .
     volumes:
         - ./addons-extra:/mnt/extra-addons
         - ./config:/etc/odoo
         - odoo-web-data:/var/lib/odoo
     env_file:
         - .env
-    mem_limit: 2g
-    mem_reservation: 1g
     networks:
       - traefik-network
+    deploy:
+      replicas: 2  # Define the number of replicas
+      restart_policy:
+        condition: on-failure
     labels:
       - "traefik.enable=true"
       - "traefik.http.services.odoo.loadbalancer.server.port=8069"
@@ -53,7 +53,9 @@ services:
 
 volumes:
     odoo-web-data:
+      driver: local
 
 networks:
   traefik-network:
     external: true
+    driver: overlay
