@@ -1,0 +1,113 @@
+services:
+  web:
+    image: odoo:16.0
+    platform: linux/amd64
+    depends_on:
+      - db
+    volumes:
+      - odoo-web-data:/var/lib/odoo
+      - ./config.dev:/etc/odoo
+      - ../odoo_custom_modules:/mnt/extra-addons
+    env_file:
+      - .env
+      # - PASSWORD_FILE=/run/secrets/postgresql_password
+    ports:
+      - "3000:8069"
+    secrets:
+      - postgresql_password
+    command: -- --log-level=debug -u linhaverde_odoo -d lv3
+    networks:
+      - internal
+      # - traefik-network
+    # labels:
+    #   - "traefik.enable=true"
+    #   - "traefik.http.routers.odoo-domain2.rule=Host(`linhafala.docker.localhost`) || Host(`odoo.app.linhafala.org.mz`)"
+    #   - "traefik.http.routers.odoo-domain2.entrypoints=web"
+    #   - "traefik.http.routers.odoo-domain3.rule=Host(`odoo.docker.localhost`)"
+    #   - "traefik.http.routers.odoo-domain3.entrypoints=web"
+    #   # Middleware for odoo.robobo.org
+    #   - "traefik.http.middlewares.odoo-domain2-headers.headers.customrequestheaders.X-Odoo-dbfilter=lfc_final"
+    #   - "traefik.http.routers.odoo-domain2.middlewares=odoo-domain2-headers"
+    #   - "traefik.http.middlewares.domain3-headers.headers.customrequestheaders.X-Odoo-dbfilter=linhaverde"
+    #   - "traefik.http.routers.odoo-domain3.middlewares=domain3-headers"
+    #   - "traefik.http.services.odoo.loadbalancer.server.port=8069"
+    #   # Middleware for odoo.robobo.org
+    #   - "traefik.http.routers.odoo-robobo.rule=Host(`odoo.robobo.org`)"
+    #   - "traefik.http.middlewares.robobo-headers.headers.customrequestheaders.X-Odoo-dbfilter=robobo"
+    #   - "traefik.http.routers.odoo-robobo.middlewares=gzip,sslheader,limit,robobo-headers"
+    #   - "traefik.http.routers.odoo-robobo.entrypoints=websecure"
+    #   # Middleware for odoo.linhafala.org.mz
+    #   - "traefik.http.routers.odoo-lfc.rule=Host(`linhafala.docker.localhost`) || Host(`odoo.app.linhafala.org.mz`)"
+    #   - "traefik.http.middlewares.lfc-headers.headers.customrequestheaders.X-Odoo-dbfilter=lfc_final"
+    #   - "traefik.http.routers.odoo-lfc.middlewares=gzip,sslheader,limit,lfc-headers"
+    #   - "traefik.http.routers.odoo-lfc.entrypoints=websecure"
+    #   #================== middlewares ==================================
+    #   - "traefik.http.middlewares.gzip.compress=true"
+    #   - "traefik.http.middlewares.sslheader.headers.customrequestheaders.X-Forwarded-Proto=https"
+    #   - "traefik.http.middlewares.limit.buffering.memRequestBodyBytes=20971520"
+    #   - "traefik.http.middlewares.limit.buffering.maxRequestBodyBytes=20971520"
+    #   - "traefik.http.middlewares.odoo-headers.headers.customrequestheaders.X-Real-IP=remote_addr"
+    #   - "traefik.http.middlewares.odoo-headers.headers.customrequestheaders.X-Forwarded-For=remote_addr"
+    #   - "traefik.http.middlewares.odoo-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
+    #   - "traefik.http.middlewares.odoo-headers.headers.customrequestheaders.Host=host"
+    #   - "traefik.http.routers.odoo.middlewares=odoo-headers"
+
+  db:
+    image: postgres:16
+    platform: linux/amd64
+    environment:
+      - POSTGRES_DB=postgres
+      - POSTGRES_USER=odoo
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    volumes:
+      - odoo-db-data:/var/lib/postgresql/data/pgdata
+      - ./config:/etc/odoo
+    secrets:
+      - postgresql_password
+    networks:
+      - internal
+    # healthcheck:
+    #   test: ["CMD-SHELL", "pg_isready"]
+    #   interval: 10s
+    #   timeout: 5s
+    #   retries: 5
+
+  # jupyter:
+  #   image: jupyter/base-notebook
+  #   ports:
+  #     - "8888:8888"
+  #   environment:
+  #     - JUPYTER_ENABLE_LAB=yes
+  #   volumes:
+  #     - ./notebooks:/home/jovyan/work
+  #   command: >
+  #     bash -c "pip install psycopg2-binary pandas openpyxl pyst2 asterisk-ami && start-notebook.sh"
+# Useful if we want to inspect and manage our database using pgadmin
+  pgadmin:
+    container_name: pgadmin4_odoo
+    image: dpage/pgadmin4
+    depends_on:
+      - db
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: root
+    ports:
+      - "81:80"
+    networks:
+      - internal
+
+volumes:
+  odoo-web-data:
+    driver: local
+  odoo-db-data:
+    driver: local
+
+secrets:
+  postgresql_password:
+    file: ./odoo_pg_pass
+
+networks:
+  internal:
+    driver: overlay
+  traefik-network:
+    external: true
