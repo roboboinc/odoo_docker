@@ -108,6 +108,5 @@ secrets:
 
 networks:
   internal:
-    driver: overlay
   traefik-network:
     external: true
