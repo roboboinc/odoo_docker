@@ -1,70 +1,46 @@
-
+version: "3.8"
 services:
   odoo:
-    #container_name: odoo
-    image: 127.0.0.1:5000/odoostack
-    build: .
+    image: odoo:16.0
     volumes:
-        - ./addons-extra:/mnt/extra-addons
-        - ./config:/etc/odoo
-        - odoo-web-data:/var/lib/odoo
+      - odoo-web-data:/var/lib/odoo
+      - ./config:/etc/odoo
+      - ../odoo_custom_modules:/mnt/extra-addons
     env_file:
-        - .env
+      - .env
+    command: --log-level=debug -u linhaverde_odoo,linhaverde_offline
     networks:
       - traefik-network
-    deploy:
-      replicas: 2  # Define the number of replicas
-      restart_policy:
-        condition: on-failure
     labels:
-      - "traefik.enable=true"
-      - "traefik.http.services.odoo.loadbalancer.server.port=8069"
-      # WebSocket Headers Middleware
-      - "traefik.http.middlewares.websocket-headers.headers.customrequestheaders.Connection=Upgrade"
-      - "traefik.http.middlewares.websocket-headers.headers.customrequestheaders.Upgrade=websocket"
-      # CORS Middleware for offline app
-      - "traefik.http.middlewares.cors-allow-offline.headers.accesscontrolalloworigin=https://offline.linha1458.moz.wfp.org"
-      - "traefik.http.middlewares.cors-allow-offline.headers.accesscontrolallowmethods=GET,OPTIONS,POST,PUT,DELETE"
-      - "traefik.http.middlewares.cors-allow-offline.headers.accesscontrolallowheaders=*"
-      - "traefik.http.middlewares.cors-allow-offline.headers.accesscontrolallowcredentials=true"
-      # Middleware for odoo.robobo.org
-      - "traefik.http.routers.odoo-robobo.rule=Host(`odoo.robobo.org`)"
-      - "traefik.http.middlewares.robobo-headers.headers.customrequestheaders.X-Odoo-dbfilter=robobo"
-      - "traefik.http.routers.odoo-robobo.middlewares=gzip,sslheader,limit,websocket-headers,robobo-headers,cors-allow-offline"
-      - "traefik.http.routers.odoo-robobo.entrypoints=websecure"
-      - "traefik.http.routers.odoo-robobo.tls.certresolver=myresolver"
-      # Middleware for odoo.linhafala.org.mz
-      - "traefik.http.routers.odoo-lfc.rule=Host(`odoo.linhafala.org.mz`) || Host(`odoo.app.linhafala.org.mz`)"
-      - "traefik.http.middlewares.lfc-headers.headers.customrequestheaders.X-Odoo-dbfilter=lfc_final"
-      - "traefik.http.routers.odoo-lfc.middlewares=gzip,sslheader,limit,websocket-headers,lfc-headers,cors-allow-offline"
-      - "traefik.http.routers.odoo-lfc.entrypoints=websecure"
-      - "traefik.http.routers.odoo-lfc.tls.certresolver=myresolver"
-      # Middleware for client-demo.odoo.robobo.org.conf
-      - "traefik.http.routers.odoo-demos.rule=Host(`client-demo.odoo.robobo.org`)"
-      - "traefik.http.middlewares.demos-headers.headers.customrequestheaders.X-Odoo-dbfilter=maisvida"
-      - "traefik.http.routers.odoo-demos.middlewares=gzip,sslheader,limit,websocket-headers,demos-headers,cors-allow-offline"
-      - "traefik.http.routers.odoo-demos.entrypoints=websecure"
-      - "traefik.http.routers.odoo-demos.tls.certresolver=myresolver"
-      #================== middlewares ==================================
-      - "traefik.http.middlewares.gzip.compress=true"
-      - "traefik.http.middlewares.sslheader.headers.customrequestheaders.X-Forwarded-Proto=https"
-      - "traefik.http.middlewares.limit.buffering.memRequestBodyBytes=20971520"
-      - "traefik.http.middlewares.limit.buffering.maxRequestBodyBytes=20971520"
-      - "traefik.http.middlewares.odoo-headers.headers.customrequestheaders.X-Real-IP=remote_addr"
-      - "traefik.http.middlewares.odoo-headers.headers.customrequestheaders.X-Forwarded-For=remote_addr"
-      - "traefik.http.middlewares.odoo-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
-      - "traefik.http.middlewares.odoo-headers.headers.customrequestheaders.Host=host"
-      - "traefik.http.routers.odoo.middlewares=odoo-headers"
-      - "traefik.http.middlewares.security-headers.headers.accesscontrolalloworigin=origin-list"
-      - "traefik.http.middlewares.security-headers.headers.contentSecurityPolicy=default-src 'self'"
-      - "traefik.http.middlewares.ratelimit.ratelimit.average=5"
-      - "traefik.http.middlewares.ratelimit.ratelimit.burst=10"
+      - traefik.enable=true
+
+      # Service: point to Odoo internal port
+      - traefik.http.services.odoo.loadbalancer.server.port=8069
+
+      # Router (staging)
+      - traefik.http.routers.odoo-robobo.rule=Host(`staging.linha1458.moz.wfp.org`)
+      - traefik.http.routers.odoo-robobo.entrypoints=web
+      - traefik.http.routers.odoo-robobo.service=odoo
+      - traefik.http.routers.odoo-robobo.middlewares=gzip,limit,cors-allow-offline
+
+      # CORS middleware (Traefik v2)
+      - traefik.http.middlewares.cors-allow-offline.headers.accesscontrolalloworiginlist=https://offline.linha1458.moz.wfp.org
+      - traefik.http.middlewares.cors-allow-offline.headers.accesscontrolallowmethods=GET,POST,PUT,DELETE,OPTIONS
+      - traefik.http.middlewares.cors-allow-offline.headers.accesscontrolallowheaders=Authorization,Content-Type,Accept
+      - traefik.http.middlewares.cors-allow-offline.headers.accesscontrolexposeheaders=Authorization
+      - traefik.http.middlewares.cors-allow-offline.headers.accesscontrolallowcredentials=true
+      - traefik.http.middlewares.cors-allow-offline.headers.addvaryheader=true
+      - traefik.http.middlewares.cors-allow-offline.headers.accesscontrolmaxage=86400
+
+      # Other middlewares
+      - traefik.http.middlewares.gzip.compress=true
+      - traefik.http.middlewares.limit.buffering.memRequestBodyBytes=20971520
+      - traefik.http.middlewares.limit.buffering.maxRequestBodyBytes=20971520
 
 volumes:
-    odoo-web-data:
-      driver: local
+  odoo-web-data:
+    driver: local
 
 networks:
   traefik-network:
     external: true
-    driver: overlay
