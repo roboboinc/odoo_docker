@@ -22,22 +22,27 @@ services:
       # WebSocket Headers Middleware
       - "traefik.http.middlewares.websocket-headers.headers.customrequestheaders.Connection=Upgrade"
       - "traefik.http.middlewares.websocket-headers.headers.customrequestheaders.Upgrade=websocket"
+      # CORS Middleware for offline app
+      - "traefik.http.middlewares.cors-allow-offline.headers.accesscontrolalloworigin=https://offline.linha1458.moz.wfp.org"
+      - "traefik.http.middlewares.cors-allow-offline.headers.accesscontrolallowmethods=GET,OPTIONS,POST,PUT,DELETE"
+      - "traefik.http.middlewares.cors-allow-offline.headers.accesscontrolallowheaders=*"
+      - "traefik.http.middlewares.cors-allow-offline.headers.accesscontrolallowcredentials=true"
       # Middleware for odoo.robobo.org
       - "traefik.http.routers.odoo-robobo.rule=Host(`odoo.robobo.org`)"
       - "traefik.http.middlewares.robobo-headers.headers.customrequestheaders.X-Odoo-dbfilter=robobo"
-      - "traefik.http.routers.odoo-robobo.middlewares=gzip,sslheader,limit,websocket-headers,robobo-headers"
+      - "traefik.http.routers.odoo-robobo.middlewares=gzip,sslheader,limit,websocket-headers,robobo-headers,cors-allow-offline"
       - "traefik.http.routers.odoo-robobo.entrypoints=websecure"
       - "traefik.http.routers.odoo-robobo.tls.certresolver=myresolver"
       # Middleware for odoo.linhafala.org.mz
       - "traefik.http.routers.odoo-lfc.rule=Host(`odoo.linhafala.org.mz`) || Host(`odoo.app.linhafala.org.mz`)"
       - "traefik.http.middlewares.lfc-headers.headers.customrequestheaders.X-Odoo-dbfilter=lfc_final"
-      - "traefik.http.routers.odoo-lfc.middlewares=gzip,sslheader,limit,websocket-headers,lfc-headers"
+      - "traefik.http.routers.odoo-lfc.middlewares=gzip,sslheader,limit,websocket-headers,lfc-headers,cors-allow-offline"
       - "traefik.http.routers.odoo-lfc.entrypoints=websecure"
       - "traefik.http.routers.odoo-lfc.tls.certresolver=myresolver"
       # Middleware for client-demo.odoo.robobo.org.conf
       - "traefik.http.routers.odoo-demos.rule=Host(`client-demo.odoo.robobo.org`)"
       - "traefik.http.middlewares.demos-headers.headers.customrequestheaders.X-Odoo-dbfilter=maisvida"
-      - "traefik.http.routers.odoo-demos.middlewares=gzip,sslheader,limit,websocket-headers,demos-headers"
+      - "traefik.http.routers.odoo-demos.middlewares=gzip,sslheader,limit,websocket-headers,demos-headers,cors-allow-offline"
       - "traefik.http.routers.odoo-demos.entrypoints=websecure"
       - "traefik.http.routers.odoo-demos.tls.certresolver=myresolver"
       #================== middlewares ==================================
@@ -50,6 +55,10 @@ services:
       - "traefik.http.middlewares.odoo-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
       - "traefik.http.middlewares.odoo-headers.headers.customrequestheaders.Host=host"
       - "traefik.http.routers.odoo.middlewares=odoo-headers"
+      - "traefik.http.middlewares.security-headers.headers.accesscontrolalloworigin=origin-list"
+      - "traefik.http.middlewares.security-headers.headers.contentSecurityPolicy=default-src 'self'"
+      - "traefik.http.middlewares.ratelimit.ratelimit.average=5"
+      - "traefik.http.middlewares.ratelimit.ratelimit.burst=10"
 
 volumes:
     odoo-web-data:
