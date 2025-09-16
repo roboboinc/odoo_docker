@@ -23,6 +23,21 @@ services:
       - traefik.http.routers.odoo-robobo.service=odoo
       - traefik.http.routers.odoo-robobo.middlewares=gzip,limit,cors-allow-offline
 
+      # Proxy offline PWA for /pt/pwa and /pwa (locale-aware)
+      - traefik.http.routers.pwa-pt.rule=Host(`staging.linha1458.moz.wfp.org`) && PathPrefix(`/pt/pwa`)
+      - traefik.http.routers.pwa-pt.entrypoints=web
+      - traefik.http.routers.pwa-pt.service=pwa-s3
+      - traefik.http.routers.pwa.rule=Host(`staging.linha1458.moz.wfp.org`) && PathPrefix(`/pwa`)
+      - traefik.http.routers.pwa.entrypoints=web
+      - traefik.http.routers.pwa.service=pwa-s3
+
+      # S3 service for offline app (replace with your actual S3 endpoint)
+      - traefik.http.services.pwa-s3.loadbalancer.server.url=https://offline.linha1458.moz.wfp.org/
+
+      # Optional: Path rewrite so /pt/pwa/* and /pwa/* map to S3 root
+      - traefik.http.middlewares.pwa-strip-prefix.stripprefix.prefixes=/pt/pwa,/pwa
+      - traefik.http.routers.pwa-pt.middlewares=pwa-strip-prefix
+      - traefik.http.routers.pwa.middlewares=pwa-strip-prefix
       # CORS middleware (Traefik v2)
       - traefik.http.middlewares.cors-allow-offline.headers.accesscontrolalloworiginlist=https://offline.linha1458.moz.wfp.org
       - traefik.http.middlewares.cors-allow-offline.headers.accesscontrolallowmethods=GET,POST,PUT,DELETE,OPTIONS
