@@ -15,7 +15,8 @@ services:
       - "3000:8069"
     secrets:
       - postgresql_password
-    command: -- --log-level=debug -u linhaverde_odoo -d lv3
+    command: -- --log-level=debug -u linhaverde_odoo,linhaverde_offline -d lv4
+    # command: -- --log-level=debug -u linhafala_odoo -d lfc_final
     networks:
       - internal
       # - traefik-network
@@ -72,17 +73,20 @@ services:
     #   timeout: 5s
     #   retries: 5
 
-  # jupyter:
-  #   image: jupyter/base-notebook
-  #   ports:
-  #     - "8888:8888"
-  #   environment:
-  #     - JUPYTER_ENABLE_LAB=yes
-  #   volumes:
-  #     - ./notebooks:/home/jovyan/work
-  #   command: >
-  #     bash -c "pip install psycopg2-binary pandas openpyxl pyst2 asterisk-ami && start-notebook.sh"
-# Useful if we want to inspect and manage our database using pgadmin
+#   jupyter:
+#     image: jupyter/base-notebook
+#     ports:
+#       - "8888:8888"
+#     environment:
+#       - JUPYTER_ENABLE_LAB=yes
+#       # - JUPYTER_TOKEN=6e79d4034175f3f1aa05fa3a74a33fb6e75de2b23a6aa67b
+#     volumes:
+#       - ./notebooks:/home/jovyan/work
+#     networks:
+#       - internal
+#     command: >
+#       bash -c "pip install psycopg2-binary pandas openpyxl pyst2 asterisk-ami && start-notebook.sh"
+# # Useful if we want to inspect and manage our database using pgadmin
   pgadmin:
     container_name: pgadmin4_odoo
     image: dpage/pgadmin4
@@ -108,5 +112,6 @@ secrets:
 
 networks:
   internal:
+    driver: bridge
   traefik-network:
     external: true
