@@ -1,4 +1,18 @@
 services:
+  # Redis for caching and session management
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --requirepass redis_password
+    volumes:
+      - redis_data:/data
+    networks:
+      - internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
   odoo:
     #container_name: odoo
     image: roboboinc/odoo16:latest #127.0.0.1:5000/odoostack
@@ -11,6 +25,7 @@ services:
         - .env
     networks:
       - traefik-network
+      - internal
     deploy:
       replicas: 1  # Define the number of replicas
       restart_policy:
@@ -50,11 +65,73 @@ services:
       - "traefik.http.middlewares.odoo-headers.headers.customrequestheaders.Host=host"
       - "traefik.http.routers.odoo.middlewares=odoo-headers"
 
+# Receevi (Chatwoot Community Edition) - Open Source Omnichannel Platform
+  receevi-web:
+    image: chatwoot/chatwoot:latest
+    depends_on:
+      - redis
+    env_file:
+        - .env
+    volumes:
+      - receevi_data:/app/storage
+    networks:
+      - traefik-network
+      - internal
+    restart: unless-stopped
+    command: ["bundle", "exec", "rails", "s", "-p", "3000", "-b", "0.0.0.0"]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.services.receevi.loadbalancer.server.port=3000"
+      - "traefik.http.routers.receevi-web.rule=Host(`oc.linhafala.org.mz`)"
+      - "traefik.http.routers.receevi-web.entrypoints=websecure"
+      - "traefik.http.routers.receevi-web.tls.certresolver=myresolver"
+      - "traefik.http.routers.receevi-web.middlewares=gzip,sslheader,limit"
+
+  # Receevi Sidekiq Worker
+  receevi-sidekiq:
+    image: chatwoot/chatwoot:latest
+    depends_on:
+      - redis
+    env_file:
+        - .env
+    volumes:
+      - receevi_data:/app/storage
+    networks:
+      - traefik-network
+      - internal
+    restart: unless-stopped
+    command: ["bundle", "exec", "sidekiq", "-C", "config/sidekiq.yml"]
+
+  # FastAPI Integration Service
+  fastapi:
+    build: ./fastapi
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+      - receevi-web
+      - odoo
+    env_file:
+        - .env
+    volumes:
+      - ./fastapi:/app
+    networks:
+      - traefik-network
+      - internal
+    restart: unless-stopped
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
 volumes:
     odoo-web-data:
       driver: local
+    redis_data:
+      driver: local
+    receevi_data:
+      driver: local
 
 networks:
+  internal:
+    driver: bridge
   traefik-network:
     external: true
     driver: overlay
