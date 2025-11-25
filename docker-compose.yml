@@ -7,7 +7,10 @@ services:
       - redis_data:/data
     networks:
       - internal
-    restart: unless-stopped
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "redis_password", "ping"]
       interval: 10s
@@ -78,7 +81,10 @@ services:
     networks:
       - traefik-network
       - internal
-    restart: unless-stopped
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
     command: ["bundle", "exec", "rails", "s", "-p", "3000", "-b", "0.0.0.0"]
     labels:
       - "traefik.enable=true"
@@ -101,15 +107,16 @@ services:
     networks:
       - traefik-network
       - internal
-    restart: unless-stopped
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
     command: ["bundle", "exec", "sidekiq", "-C", "config/sidekiq.yml"]
 
   # FastAPI Integration Service
   fastapi:
     build: ./fastapi
     image: fastapi-integration:latest
-    ports:
-      - "8000:8000"
     depends_on:
       - redis
       - receevi-web
@@ -121,8 +128,17 @@ services:
     networks:
       - traefik-network
       - internal
-    restart: unless-stopped
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.services.fastapi.loadbalancer.server.port=8000"
+      - "traefik.http.routers.fastapi.rule=Host(`api.linhafala.org.mz`)"
+      - "traefik.http.routers.fastapi.entrypoints=websecure"
+      - "traefik.http.routers.fastapi.tls.certresolver=myresolver"
 
 volumes:
     odoo-web-data:
