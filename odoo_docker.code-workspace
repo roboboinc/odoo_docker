@@ -1,0 +1,17 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../odoo_custom_modules/auth_oidc"
+		},
+		{
+			"path": "../odoo_custom_modules/linhafala_odoo"
+		},
+		{
+			"path": "../odoo_custom_modules/linhaverde_odoo"
+		}
+	],
+	"settings": {}
+}

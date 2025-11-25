@@ -4,12 +4,25 @@ services:
     #container_name: odoo
     image: 127.0.0.1:5000/odoostack
     build: .
+    # Disable cron threads on web pods; a separate cron service runs scheduled jobs
+    command: ["odoo", "-c", "/etc/odoo/odoo.conf", "--max-cron-threads=0"]
     volumes:
-        - ./addons-extra:/mnt/extra-addons
-        - ./config:/etc/odoo
-        - odoo-web-data:/var/lib/odoo
+        # NOTE: For multi-node Swarm, back these with a shared/external volume (NFS/EFS/etc.)
+        - addons-extra:/mnt/extra-addons:ro
+        - odoo-filestore:/var/lib/odoo
+    configs:
+      - source: odoo_conf
+        target: /etc/odoo/odoo.conf
+        mode: 0444
     env_file:
         - .env
+    environment:
+      # S3-compatible attachment storage (DigitalOcean Spaces)
+      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-https://nyc3.digitaloceanspaces.com}
+      - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID}
+      - S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY}
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME}
+      - S3_REGION=${S3_REGION:-nyc3}
     networks:
       - traefik-network
     deploy:
@@ -19,6 +32,8 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.http.services.odoo.loadbalancer.server.port=8069"
+      # Sticky sessions so authenticated users consistently hit the same pod
+      - "traefik.http.services.odoo.loadbalancer.sticky.cookie.name=odoo_sticky"
       # WebSocket Headers Middleware
       - "traefik.http.middlewares.websocket-headers.headers.customrequestheaders.Connection=Upgrade"
       - "traefik.http.middlewares.websocket-headers.headers.customrequestheaders.Upgrade=websocket"
@@ -60,11 +75,66 @@ services:
       - "traefik.http.middlewares.ratelimit.ratelimit.average=5"
       - "traefik.http.middlewares.ratelimit.ratelimit.burst=10"
 
+  # Lightweight HTTP responder for /health. Traefik routes below ensure 200 OK
+  # without touching Odoo, ideal for ALB/NLB health checks.
+  health:
+    image: traefik/whoami:v1.10.2
+    networks:
+      - traefik-network
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    labels:
+      - "traefik.enable=true"
+      # Generic catch-all: any host + /health
+      - "traefik.http.routers.health.rule=Path(`/health`)"
+      - "traefik.http.routers.health.entrypoints=websecure"
+      - "traefik.http.routers.health.priority=1000"
+      - "traefik.http.services.health.loadbalancer.server.port=80"
+
+  # Dedicated cron worker (one replica) to avoid duplicate scheduled jobs across web pods
+  odoo-cron:
+    image: 127.0.0.1:5000/odoostack
+    build: .
+    command: ["odoo", "-c", "/etc/odoo/odoo.conf", "--max-cron-threads=1"]
+    networks:
+      - traefik-network
+    volumes:
+      - addons-extra:/mnt/extra-addons:ro
+      - odoo-filestore:/var/lib/odoo
+    configs:
+      - source: odoo_conf
+        target: /etc/odoo/odoo.conf
+        mode: 0444
+    env_file:
+      - .env
+    environment:
+      # S3-compatible attachment storage (DigitalOcean Spaces)
+      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-https://nyc3.digitaloceanspaces.com}
+      - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID}
+      - S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY}
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME}
+      - S3_REGION=${S3_REGION:-nyc3}
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
 volumes:
-    odoo-web-data:
-      driver: local
+  # For S3 attachments, filestore volume is no longer needed for file storage
+  # but still used for temporary files and sessions. Can be node-local.
+  odoo-filestore:
+    driver: local
+  addons-extra:
+    external: true
 
 networks:
   traefik-network:
     external: true
     driver: overlay
+
+configs:
+  # Swarm-friendly config distribution (replaces host bind mount of ./config)
+  odoo_conf:
+    file: ./config/odoo.conf
