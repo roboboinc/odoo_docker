@@ -6,7 +6,7 @@ services:
     volumes:
       - redis_data:/data
     networks:
-      - internal
+      - traefik-network
     deploy:
       replicas: 1
       restart_policy:
@@ -28,7 +28,6 @@ services:
         - .env
     networks:
       - traefik-network
-      - internal
     deploy:
       replicas: 1  # Define the number of replicas
       restart_policy:
@@ -80,7 +79,6 @@ services:
       - receevi_data:/app/storage
     networks:
       - traefik-network
-      - internal
     deploy:
       replicas: 1
       restart_policy:
@@ -106,7 +104,6 @@ services:
       - receevi_data:/app/storage
     networks:
       - traefik-network
-      - internal
     deploy:
       replicas: 1
       restart_policy:
@@ -127,7 +124,6 @@ services:
       - ./fastapi:/app
     networks:
       - traefik-network
-      - internal
     deploy:
       replicas: 1
       restart_policy:
@@ -149,8 +145,5 @@ volumes:
       driver: local
 
 networks:
-  internal:
-    driver: overlay
-    attachable: true
   traefik-network:
     external: true
