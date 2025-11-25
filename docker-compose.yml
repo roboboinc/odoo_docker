@@ -34,28 +34,49 @@ services:
         condition: on-failure
     labels:
       - "traefik.enable=true"
+      # HTTP Service (port 8069)
       - "traefik.http.services.odoo.loadbalancer.server.port=8069"
+      # WebSocket Service (port 8072)
+      - "traefik.http.services.odoo-websocket.loadbalancer.server.port=8072"
       # WebSocket Headers Middleware
       - "traefik.http.middlewares.websocket-headers.headers.customrequestheaders.Connection=Upgrade"
       - "traefik.http.middlewares.websocket-headers.headers.customrequestheaders.Upgrade=websocket"
       # Middleware for odoo.robobo.org
       - "traefik.http.routers.odoo-robobo.rule=Host(`odoo.robobo.org`)"
       - "traefik.http.middlewares.robobo-headers.headers.customrequestheaders.X-Odoo-dbfilter=robobo"
-      - "traefik.http.routers.odoo-robobo.middlewares=gzip,sslheader,limit,websocket-headers,robobo-headers"
+      - "traefik.http.routers.odoo-robobo.middlewares=gzip,sslheader,limit,robobo-headers"
       - "traefik.http.routers.odoo-robobo.entrypoints=websecure"
       - "traefik.http.routers.odoo-robobo.tls.certresolver=myresolver"
+      # WebSocket router for odoo.robobo.org
+      - "traefik.http.routers.odoo-robobo-ws.rule=Host(`odoo.robobo.org`) && PathPrefix(`/websocket`)"
+      - "traefik.http.routers.odoo-robobo-ws.service=odoo-websocket"
+      - "traefik.http.routers.odoo-robobo-ws.middlewares=websocket-headers,robobo-headers"
+      - "traefik.http.routers.odoo-robobo-ws.entrypoints=websecure"
+      - "traefik.http.routers.odoo-robobo-ws.tls.certresolver=myresolver"
       # Middleware for odoo.linhafala.org.mz
       - "traefik.http.routers.odoo-lfc.rule=Host(`odoo.linhafala.org.mz`) || Host(`odoo.app.linhafala.org.mz`)"
       - "traefik.http.middlewares.lfc-headers.headers.customrequestheaders.X-Odoo-dbfilter=lfc_final"
-      - "traefik.http.routers.odoo-lfc.middlewares=gzip,sslheader,limit,websocket-headers,lfc-headers"
+      - "traefik.http.routers.odoo-lfc.middlewares=gzip,sslheader,limit,lfc-headers"
       - "traefik.http.routers.odoo-lfc.entrypoints=websecure"
       - "traefik.http.routers.odoo-lfc.tls.certresolver=myresolver"
+      # WebSocket router for odoo.linhafala.org.mz
+      - "traefik.http.routers.odoo-lfc-ws.rule=(Host(`odoo.linhafala.org.mz`) || Host(`odoo.app.linhafala.org.mz`)) && PathPrefix(`/websocket`)"
+      - "traefik.http.routers.odoo-lfc-ws.service=odoo-websocket"
+      - "traefik.http.routers.odoo-lfc-ws.middlewares=websocket-headers,lfc-headers"
+      - "traefik.http.routers.odoo-lfc-ws.entrypoints=websecure"
+      - "traefik.http.routers.odoo-lfc-ws.tls.certresolver=myresolver"
       # Middleware for client-demo.odoo.robobo.org.conf
       - "traefik.http.routers.odoo-demos.rule=Host(`client-demo.odoo.robobo.org`)"
       - "traefik.http.middlewares.demos-headers.headers.customrequestheaders.X-Odoo-dbfilter=maisvida"
-      - "traefik.http.routers.odoo-demos.middlewares=gzip,sslheader,limit,websocket-headers,demos-headers"
+      - "traefik.http.routers.odoo-demos.middlewares=gzip,sslheader,limit,demos-headers"
       - "traefik.http.routers.odoo-demos.entrypoints=websecure"
       - "traefik.http.routers.odoo-demos.tls.certresolver=myresolver"
+      # WebSocket router for client-demo.odoo.robobo.org
+      - "traefik.http.routers.odoo-demos-ws.rule=Host(`client-demo.odoo.robobo.org`) && PathPrefix(`/websocket`)"
+      - "traefik.http.routers.odoo-demos-ws.service=odoo-websocket"
+      - "traefik.http.routers.odoo-demos-ws.middlewares=websocket-headers,demos-headers"
+      - "traefik.http.routers.odoo-demos-ws.entrypoints=websecure"
+      - "traefik.http.routers.odoo-demos-ws.tls.certresolver=myresolver"
       #================== middlewares ==================================
       - "traefik.http.middlewares.gzip.compress=true"
       - "traefik.http.middlewares.sslheader.headers.customrequestheaders.X-Forwarded-Proto=https"
