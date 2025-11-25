@@ -9,14 +9,14 @@ services:
       - internal
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      test: ["CMD", "redis-cli", "-a", "redis_password", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
   odoo:
     #container_name: odoo
     image: roboboinc/odoo16:latest #127.0.0.1:5000/odoostack
-    build: .
+    # build: .  # Commented out - using pre-built image in production
     volumes:
         - ./addons-extra:/mnt/extra-addons
         - ./config:/etc/odoo
@@ -65,7 +65,8 @@ services:
       - "traefik.http.middlewares.odoo-headers.headers.customrequestheaders.Host=host"
       - "traefik.http.routers.odoo.middlewares=odoo-headers"
 
-# Receevi (Chatwoot Community Edition) - Open Source Omnichannel Platform
+  # Receevi (Chatwoot Community Edition) - Open Source Omnichannel Platform
+  # Note: Connects to external Digital Ocean PostgreSQL database via .env config
   receevi-web:
     image: chatwoot/chatwoot:latest
     depends_on:
@@ -92,6 +93,7 @@ services:
     image: chatwoot/chatwoot:latest
     depends_on:
       - redis
+      - receevi-web
     env_file:
         - .env
     volumes:
@@ -119,7 +121,7 @@ services:
       - traefik-network
       - internal
     restart: unless-stopped
-    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
 
 volumes:
     odoo-web-data:
@@ -134,4 +136,3 @@ networks:
     driver: bridge
   traefik-network:
     external: true
-    driver: overlay
