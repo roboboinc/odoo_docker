@@ -34,55 +34,28 @@ services:
         condition: on-failure
     labels:
       - "traefik.enable=true"
-      # HTTP Service (port 8069)
       - "traefik.http.services.odoo.loadbalancer.server.port=8069"
-      # WebSocket Service (port 8072 for longpolling)
-      - "traefik.http.services.odoo-longpolling.loadbalancer.server.port=8072"
-      
+      # WebSocket Headers Middleware
+      - "traefik.http.middlewares.websocket-headers.headers.customrequestheaders.Connection=Upgrade"
+      - "traefik.http.middlewares.websocket-headers.headers.customrequestheaders.Upgrade=websocket"
       # Middleware for odoo.robobo.org
       - "traefik.http.routers.odoo-robobo.rule=Host(`odoo.robobo.org`)"
       - "traefik.http.middlewares.robobo-headers.headers.customrequestheaders.X-Odoo-dbfilter=robobo"
-      - "traefik.http.routers.odoo-robobo.middlewares=gzip,sslheader,limit,robobo-headers"
+      - "traefik.http.routers.odoo-robobo.middlewares=gzip,sslheader,limit,websocket-headers,robobo-headers"
       - "traefik.http.routers.odoo-robobo.entrypoints=websecure"
       - "traefik.http.routers.odoo-robobo.tls.certresolver=myresolver"
-      - "traefik.http.routers.odoo-robobo.priority=1"
-      # Longpolling/WebSocket router for odoo.robobo.org
-      - "traefik.http.routers.odoo-robobo-longpolling.rule=Host(`odoo.robobo.org`) && (PathPrefix(`/websocket`) || PathPrefix(`/longpolling`))"
-      - "traefik.http.routers.odoo-robobo-longpolling.service=odoo-longpolling"
-      - "traefik.http.routers.odoo-robobo-longpolling.middlewares=robobo-headers"
-      - "traefik.http.routers.odoo-robobo-longpolling.entrypoints=websecure"
-      - "traefik.http.routers.odoo-robobo-longpolling.tls.certresolver=myresolver"
-      - "traefik.http.routers.odoo-robobo-longpolling.priority=10"
-      
       # Middleware for odoo.linhafala.org.mz
       - "traefik.http.routers.odoo-lfc.rule=Host(`odoo.linhafala.org.mz`) || Host(`odoo.app.linhafala.org.mz`)"
       - "traefik.http.middlewares.lfc-headers.headers.customrequestheaders.X-Odoo-dbfilter=lfc_final"
-      - "traefik.http.routers.odoo-lfc.middlewares=gzip,sslheader,limit,lfc-headers"
+      - "traefik.http.routers.odoo-lfc.middlewares=gzip,sslheader,limit,websocket-headers,lfc-headers"
       - "traefik.http.routers.odoo-lfc.entrypoints=websecure"
       - "traefik.http.routers.odoo-lfc.tls.certresolver=myresolver"
-      - "traefik.http.routers.odoo-lfc.priority=1"
-      # Longpolling/WebSocket router for odoo.linhafala.org.mz
-      - "traefik.http.routers.odoo-lfc-longpolling.rule=(Host(`odoo.linhafala.org.mz`) || Host(`odoo.app.linhafala.org.mz`)) && (PathPrefix(`/websocket`) || PathPrefix(`/longpolling`))"
-      - "traefik.http.routers.odoo-lfc-longpolling.service=odoo-longpolling"
-      - "traefik.http.routers.odoo-lfc-longpolling.middlewares=lfc-headers"
-      - "traefik.http.routers.odoo-lfc-longpolling.entrypoints=websecure"
-      - "traefik.http.routers.odoo-lfc-longpolling.tls.certresolver=myresolver"
-      - "traefik.http.routers.odoo-lfc-longpolling.priority=10"
-      
-      # Middleware for client-demo.odoo.robobo.org
+      # Middleware for client-demo.odoo.robobo.org.conf
       - "traefik.http.routers.odoo-demos.rule=Host(`client-demo.odoo.robobo.org`)"
       - "traefik.http.middlewares.demos-headers.headers.customrequestheaders.X-Odoo-dbfilter=maisvida"
-      - "traefik.http.routers.odoo-demos.middlewares=gzip,sslheader,limit,demos-headers"
+      - "traefik.http.routers.odoo-demos.middlewares=gzip,sslheader,limit,websocket-headers,demos-headers"
       - "traefik.http.routers.odoo-demos.entrypoints=websecure"
       - "traefik.http.routers.odoo-demos.tls.certresolver=myresolver"
-      - "traefik.http.routers.odoo-demos.priority=1"
-      # Longpolling/WebSocket router for client-demo.odoo.robobo.org
-      - "traefik.http.routers.odoo-demos-longpolling.rule=Host(`client-demo.odoo.robobo.org`) && (PathPrefix(`/websocket`) || PathPrefix(`/longpolling`))"
-      - "traefik.http.routers.odoo-demos-longpolling.service=odoo-longpolling"
-      - "traefik.http.routers.odoo-demos-longpolling.middlewares=demos-headers"
-      - "traefik.http.routers.odoo-demos-longpolling.entrypoints=websecure"
-      - "traefik.http.routers.odoo-demos-longpolling.tls.certresolver=myresolver"
-      - "traefik.http.routers.odoo-demos-longpolling.priority=10"
       #================== middlewares ==================================
       - "traefik.http.middlewares.gzip.compress=true"
       - "traefik.http.middlewares.sslheader.headers.customrequestheaders.X-Forwarded-Proto=https"
