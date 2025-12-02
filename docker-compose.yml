@@ -79,6 +79,13 @@ services:
       - receevi_data:/app/storage
     networks:
       - traefik-network
+    labels:
+        - "traefik.enable=true"
+        - "traefik.http.services.receevi.loadbalancer.server.port=3000"
+        - "traefik.http.routers.receevi-web.rule=Host(`oc.linhafala.org.mz`)"
+        - "traefik.http.routers.receevi-web.entrypoints=websecure"
+        - "traefik.http.routers.receevi-web.tls.certresolver=myresolver"
+        - "traefik.http.routers.receevi-web.middlewares=gzip,sslheader,limit"
     deploy:
       replicas: 1
       restart_policy:
