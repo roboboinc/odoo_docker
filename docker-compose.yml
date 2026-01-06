@@ -45,17 +45,17 @@ services:
         - "traefik.http.routers.odoo-robobo.entrypoints=websecure"
         - "traefik.http.routers.odoo-robobo.tls.certresolver=myresolver"
         # Middleware for odoo.linhafala.org.mz
-        # - "traefik.http.routers.odoo-lfc.rule=Host(`odoo.linhafala.org.mz`) || Host(`odoo.app.linhafala.org.mz`)"
-        # - "traefik.http.middlewares.lfc-headers.headers.customrequestheaders.X-Odoo-dbfilter=lfc_final"
-        # - "traefik.http.routers.odoo-lfc.middlewares=gzip,sslheader,limit,websocket-headers,lfc-headers"
-        # - "traefik.http.routers.odoo-lfc.entrypoints=websecure"
-        # - "traefik.http.routers.odoo-lfc.tls.certresolver=myresolver"
-        # # Middleware for client-demo.odoo.robobo.org.conf
-        # - "traefik.http.routers.odoo-demos.rule=Host(`client-demo.odoo.robobo.org`)"
-        # - "traefik.http.middlewares.demos-headers.headers.customrequestheaders.X-Odoo-dbfilter=maisvida"
-        # - "traefik.http.routers.odoo-demos.middlewares=gzip,sslheader,limit,websocket-headers,demos-headers"
-        # - "traefik.http.routers.odoo-demos.entrypoints=websecure"
-        # - "traefik.http.routers.odoo-demos.tls.certresolver=myresolver"
+        - "traefik.http.routers.odoo-lfc.rule=Host(`odoo.linhafala.org.mz`) || Host(`odoo.app.linhafala.org.mz`)"
+        - "traefik.http.middlewares.lfc-headers.headers.customrequestheaders.X-Odoo-dbfilter=lfc_final"
+        - "traefik.http.routers.odoo-lfc.middlewares=gzip,sslheader,limit,websocket-headers,lfc-headers"
+        - "traefik.http.routers.odoo-lfc.entrypoints=websecure"
+        - "traefik.http.routers.odoo-lfc.tls.certresolver=myresolver"
+        # Middleware for client-demo.odoo.robobo.org.conf
+        - "traefik.http.routers.odoo-demos.rule=Host(`client-demo.odoo.robobo.org`)"
+        - "traefik.http.middlewares.demos-headers.headers.customrequestheaders.X-Odoo-dbfilter=maisvida"
+        - "traefik.http.routers.odoo-demos.middlewares=gzip,sslheader,limit,websocket-headers,demos-headers"
+        - "traefik.http.routers.odoo-demos.entrypoints=websecure"
+        - "traefik.http.routers.odoo-demos.tls.certresolver=myresolver"
         #================== middlewares ==================================
         - "traefik.http.middlewares.gzip.compress=true"
         - "traefik.http.middlewares.sslheader.headers.customrequestheaders.X-Forwarded-Proto=https"
@@ -79,13 +79,6 @@ services:
       - receevi_data:/app/storage
     networks:
       - traefik-network
-    labels:
-        - "traefik.enable=true"
-        - "traefik.http.services.receevi.loadbalancer.server.port=3000"
-        - "traefik.http.routers.receevi-web.rule=Host(`oc.linhafala.org.mz`)"
-        - "traefik.http.routers.receevi-web.entrypoints=websecure"
-        - "traefik.http.routers.receevi-web.tls.certresolver=myresolver"
-        - "traefik.http.routers.receevi-web.middlewares=gzip,sslheader,limit"
     deploy:
       replicas: 1
       restart_policy:
