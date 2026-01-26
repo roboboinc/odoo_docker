@@ -1,11 +1,16 @@
 version: "3.8"
 services:
   odoo:
-    image: odoo:16.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: odoo-custom:16.0
     volumes:
       - odoo-web-data:/var/lib/odoo
-      - ./config:/etc/odoo
-      - ../odoo_custom_modules:/mnt/extra-addons
+      # Config and custom modules are now bundled in the image
+      # Removed bind mounts for swarm compatibility:
+      # - ./config:/etc/odoo
+      # - ../odoo_custom_modules:/mnt/extra-addons
     env_file:
       - .env
     command: --log-level=debug -u linhaverde_odoo,linhaverde_offline
