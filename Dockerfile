@@ -33,11 +33,11 @@ RUN pip3 install --no-cache-dir \
     python-jose==3.3.0
 
 # Copy Odoo configuration file
-COPY --chown=odoo:odoo config/odoo.conf /etc/odoo/odoo.conf
+COPY --chown=odoo:odoo odoo_docker/config/odoo.conf /etc/odoo/odoo.conf
 
 # Copy custom modules into the container
 # This bundles the modules so they work in swarm mode without bind mounts
-COPY --chown=odoo:odoo ../odoo_custom_modules /mnt/extra-addons
+COPY --chown=odoo:odoo odoo_custom_modules /mnt/extra-addons
 
 USER odoo
 
