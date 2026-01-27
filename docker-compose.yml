@@ -9,6 +9,8 @@ services:
       # - ../odoo_custom_modules:/mnt/extra-addons
     env_file:
       - .env
+    ports:
+      - "8069:8069"
     command: --log-level=debug -u linhaverde_odoo,linhaverde_offline
     networks:
       - traefik-network
