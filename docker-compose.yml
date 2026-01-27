@@ -14,46 +14,47 @@ services:
     command: --log-level=debug -u linhaverde_odoo,linhaverde_offline
     networks:
       - traefik-network
-    labels:
-      - traefik.enable=true
+    deploy:
+      labels:
+        - traefik.enable=true
 
-      # Service: point to Odoo internal port
-      - traefik.http.services.odoo.loadbalancer.server.port=8069
+        # Service: point to Odoo internal port
+        - traefik.http.services.odoo.loadbalancer.server.port=8069
 
-      # Router (staging)
-      - traefik.http.routers.odoo-robobo.rule=Host(`staging.linha1458.moz.wfp.org`)
-      - traefik.http.routers.odoo-robobo.entrypoints=web
-      - traefik.http.routers.odoo-robobo.service=odoo
-      - traefik.http.routers.odoo-robobo.middlewares=gzip,limit,cors-allow-offline
+        # Router (staging)
+        - traefik.http.routers.odoo-robobo.rule=Host(`staging.linha1458.moz.wfp.org`)
+        - traefik.http.routers.odoo-robobo.entrypoints=web
+        - traefik.http.routers.odoo-robobo.service=odoo
+        - traefik.http.routers.odoo-robobo.middlewares=gzip,limit,cors-allow-offline
 
-      # Proxy offline PWA for /pt/pwa and /pwa (locale-aware)
-      - traefik.http.routers.pwa-pt.rule=Host(`staging.linha1458.moz.wfp.org`) && PathPrefix(`/pt/pwa`)
-      - traefik.http.routers.pwa-pt.entrypoints=web
-      - traefik.http.routers.pwa-pt.service=pwa-s3
-      - traefik.http.routers.pwa.rule=Host(`staging.linha1458.moz.wfp.org`) && PathPrefix(`/pwa`)
-      - traefik.http.routers.pwa.entrypoints=web
-      - traefik.http.routers.pwa.service=pwa-s3
+        # Proxy offline PWA for /pt/pwa and /pwa (locale-aware)
+        - traefik.http.routers.pwa-pt.rule=Host(`staging.linha1458.moz.wfp.org`) && PathPrefix(`/pt/pwa`)
+        - traefik.http.routers.pwa-pt.entrypoints=web
+        - traefik.http.routers.pwa-pt.service=pwa-s3
+        - traefik.http.routers.pwa.rule=Host(`staging.linha1458.moz.wfp.org`) && PathPrefix(`/pwa`)
+        - traefik.http.routers.pwa.entrypoints=web
+        - traefik.http.routers.pwa.service=pwa-s3
 
-      # S3 service for offline app (replace with your actual S3 endpoint)
-      - traefik.http.services.pwa-s3.loadbalancer.server.url=https://offline.linha1458.moz.wfp.org/
+        # S3 service for offline app (replace with your actual S3 endpoint)
+        - traefik.http.services.pwa-s3.loadbalancer.server.url=https://offline.linha1458.moz.wfp.org/
 
-      # Optional: Path rewrite so /pt/pwa/* and /pwa/* map to S3 root
-      - traefik.http.middlewares.pwa-strip-prefix.stripprefix.prefixes=/pt/pwa,/pwa
-      - traefik.http.routers.pwa-pt.middlewares=pwa-strip-prefix
-      - traefik.http.routers.pwa.middlewares=pwa-strip-prefix
-      # CORS middleware (Traefik v2)
-      - traefik.http.middlewares.cors-allow-offline.headers.accesscontrolalloworiginlist=https://offline.linha1458.moz.wfp.org
-      - traefik.http.middlewares.cors-allow-offline.headers.accesscontrolallowmethods=GET,POST,PUT,DELETE,OPTIONS
-      - traefik.http.middlewares.cors-allow-offline.headers.accesscontrolallowheaders=Authorization,Content-Type,Accept
-      - traefik.http.middlewares.cors-allow-offline.headers.accesscontrolexposeheaders=Authorization
-      - traefik.http.middlewares.cors-allow-offline.headers.accesscontrolallowcredentials=true
-      - traefik.http.middlewares.cors-allow-offline.headers.addvaryheader=true
-      - traefik.http.middlewares.cors-allow-offline.headers.accesscontrolmaxage=86400
+        # Optional: Path rewrite so /pt/pwa/* and /pwa/* map to S3 root
+        - traefik.http.middlewares.pwa-strip-prefix.stripprefix.prefixes=/pt/pwa,/pwa
+        - traefik.http.routers.pwa-pt.middlewares=pwa-strip-prefix
+        - traefik.http.routers.pwa.middlewares=pwa-strip-prefix
+        # CORS middleware (Traefik v2)
+        - traefik.http.middlewares.cors-allow-offline.headers.accesscontrolalloworiginlist=https://offline.linha1458.moz.wfp.org
+        - traefik.http.middlewares.cors-allow-offline.headers.accesscontrolallowmethods=GET,POST,PUT,DELETE,OPTIONS
+        - traefik.http.middlewares.cors-allow-offline.headers.accesscontrolallowheaders=Authorization,Content-Type,Accept
+        - traefik.http.middlewares.cors-allow-offline.headers.accesscontrolexposeheaders=Authorization
+        - traefik.http.middlewares.cors-allow-offline.headers.accesscontrolallowcredentials=true
+        - traefik.http.middlewares.cors-allow-offline.headers.addvaryheader=true
+        - traefik.http.middlewares.cors-allow-offline.headers.accesscontrolmaxage=86400
 
-      # Other middlewares
-      - traefik.http.middlewares.gzip.compress=true
-      - traefik.http.middlewares.limit.buffering.memRequestBodyBytes=20971520
-      - traefik.http.middlewares.limit.buffering.maxRequestBodyBytes=20971520
+        # Other middlewares
+        - traefik.http.middlewares.gzip.compress=true
+        - traefik.http.middlewares.limit.buffering.memRequestBodyBytes=20971520
+        - traefik.http.middlewares.limit.buffering.maxRequestBodyBytes=20971520
 
 volumes:
   odoo-web-data:
