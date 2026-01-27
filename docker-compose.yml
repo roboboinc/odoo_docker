@@ -1,8 +1,5 @@
 services:
   odoo:
-    build:
-      context: .
-      dockerfile: Dockerfile
     image: odoo-custom:16.0
     volumes:
       - odoo-web-data:/var/lib/odoo
