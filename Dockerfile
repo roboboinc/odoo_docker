@@ -32,17 +32,19 @@ RUN pip3 install --no-cache-dir \
     numpy==1.24.3 \
     python-jose==3.3.0
 
-# Copy Odoo configuration file
-COPY --chown=odoo:odoo config/odoo.conf /etc/odoo/odoo.conf
-
 # Copy custom modules into the container
 # This bundles the modules so they work in swarm mode without bind mounts
 COPY --chown=odoo:odoo odoo_custom_modules /mnt/extra-addons
+
+# Copy entrypoint script to generate config from environment variables
+COPY --chown=root:root odoo_docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 USER odoo
 
 # Expose Odoo port
 EXPOSE 8069
 
-# Use the configuration file
+# Use entrypoint script to generate config and start Odoo
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["odoo", "--config=/etc/odoo/odoo.conf"]

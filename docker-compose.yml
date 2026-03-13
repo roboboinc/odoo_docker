@@ -11,15 +11,43 @@ services:
       - .env
     ports:
       - "8069:8069"
-    command: --log-level=debug -u linhaverde_odoo,linhaverde_offline
+    command: odoo --config=/etc/odoo/odoo.conf
     networks:
       - traefik-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8069/web/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: "1"
+          memory: "2G"
+        reservations:
+          cpus: "0.5"
+          memory: "1G"
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
       labels:
         - traefik.enable=true
 
         # Service: point to Odoo internal port
         - traefik.http.services.odoo.loadbalancer.server.port=8069
+        
+        # Sticky sessions - CRITICAL for multi-replica deployments
+        - traefik.http.services.odoo.loadbalancer.sticky=true
+        - traefik.http.services.odoo.loadbalancer.sticky.cookie.httponly=true
+        - traefik.http.services.odoo.loadbalancer.sticky.cookie.secure=true
+        - traefik.http.services.odoo.loadbalancer.sticky.cookie.samesite=Lax
 
         # Router (staging)
         - traefik.http.routers.odoo-robobo.rule=Host(`staging.linha1458.moz.wfp.org`)
@@ -59,6 +87,9 @@ services:
 volumes:
   odoo-web-data:
     driver: local
+    # For production with multiple replicas, consider using:
+    # driver: nfs  (or another distributed storage driver)
+    # To enable shared attachment storage across all Odoo instances
 
 networks:
   traefik-network:
