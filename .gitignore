@@ -1,3 +1,4 @@
 .env
+.local.env
 .env_robobo_odoo
 config.txt

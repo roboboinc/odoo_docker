@@ -67,8 +67,8 @@ services:
         - "traefik.http.middlewares.odoo-headers.headers.customrequestheaders.Host=host"
         - "traefik.http.routers.odoo.middlewares=odoo-headers"
 
-  # Receevi (Chatwoot Community Edition) - Open Source Omnichannel Platform
-  # Note: Connects to external Digital Ocean PostgreSQL database via .env config
+  # Receevi (Chatwoot) - Omnichannel at https://oc.linhafala.org.mz
+  # Customer ↔ Receevi ↔ FastAPI ↔ Odoo Discuss (linhafala_omniChannel_integration)
   receevi-web:
     image: chatwoot/chatwoot:latest
     depends_on:
@@ -110,7 +110,7 @@ services:
         condition: on-failure
     command: ["bundle", "exec", "sidekiq", "-C", "config/sidekiq.yml"]
 
-  # FastAPI Integration Service
+  # FastAPI: Receevi ↔ Odoo Discuss (webhooks + poll). Set ODOO_DB=robobo in .env for odoo.robobo.org
   fastapi:
     build: ./fastapi
     image: fastapi-integration:latest
@@ -120,8 +120,14 @@ services:
       - odoo
     env_file:
         - .env
+    environment:
+      # Defaults only; secrets (RECEEVI_API_KEY, ODOO_USERNAME, ODOO_PASSWORD) come from env_file
+      - RECEEVI_URL=${RECEEVI_URL:-http://receevi-web:3000}
+      - RECEEVI_ACCOUNT_ID=${RECEEVI_ACCOUNT_ID:-1}
+      - ODOO_URL=http://odoo:8069
+      - ODOO_DB=${ODOO_DB:-robobo}
     volumes:
-      - ./fastapi:/app
+      - fastapi_data:/app/data
     networks:
       - traefik-network
     deploy:
@@ -131,9 +137,16 @@ services:
       labels:
         - "traefik.enable=true"
         - "traefik.http.services.fastapi.loadbalancer.server.port=8000"
-        - "traefik.http.routers.fastapi.rule=Host(`api.linhafala.org.mz`)"
+        # Router 1: api.linhafala.org.mz (pode perder para outro backend no Traefik)
+        - "traefik.http.routers.fastapi.rule=Host(`api.linhafala.org.mz`) && PathPrefix(`/webhooks`)"
         - "traefik.http.routers.fastapi.entrypoints=websecure"
         - "traefik.http.routers.fastapi.tls.certresolver=myresolver"
+        - "traefik.http.routers.fastapi.priority=1000"
+        # Router 2: host só para webhooks – sem conflito. Usar no Receevi: https://webhook.linhafala.org.mz/webhooks/receevi
+        - "traefik.http.routers.fastapi-webhook.rule=Host(`webhook.linhafala.org.mz`)"
+        - "traefik.http.routers.fastapi-webhook.entrypoints=websecure"
+        - "traefik.http.routers.fastapi-webhook.tls.certresolver=myresolver"
+        - "traefik.http.routers.fastapi-webhook.service=fastapi"
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
 
 volumes:
@@ -142,6 +155,8 @@ volumes:
     redis_data:
       driver: local
     receevi_data:
+      driver: local
+    fastapi_data:
       driver: local
 
 networks:
