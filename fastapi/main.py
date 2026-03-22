@@ -12,9 +12,18 @@ _RECENTLY_SENT_CACHE: Dict[Tuple[int, str], float] = {}
 ECHO_DEDUP_WINDOW = 120  # seconds
 
 
+def _message_dedup_key(content: str) -> str:
+    """
+    Normalize body for echo matching. Poll stores plain text; Chatwoot webhooks
+    often send HTML (<p>...</p>), so string equality failed and the webhook
+    re-inserted into Odoo → poll sent again → duplicate bubbles + raw tags.
+    """
+    return strip_html(content or "").strip()
+
+
 def _record_sent_to_chatwoot(conv_id: int, content: str) -> None:
     """Record that we sent this message to Chatwoot (to skip echo webhook)."""
-    key = (conv_id, (content or "").strip())
+    key = (conv_id, _message_dedup_key(content))
     _RECENTLY_SENT_CACHE[key] = time.time()
     # Prune old entries
     cutoff = time.time() - ECHO_DEDUP_WINDOW
@@ -25,7 +34,7 @@ def _record_sent_to_chatwoot(conv_id: int, content: str) -> None:
 
 def _we_recently_sent_this(conv_id: int, content: str) -> bool:
     """True if we sent this exact message to Chatwoot recently (echo)."""
-    key = (conv_id, (content or "").strip())
+    key = (conv_id, _message_dedup_key(content))
     ts = _RECENTLY_SENT_CACHE.get(key)
     if ts is None:
         return False
@@ -356,9 +365,10 @@ async def receevi_webhook(request: Request):
             inbox_id = parsed.get("inbox_id")
             if inbox_id is not None and isinstance(inbox_id, str) and str(inbox_id).isdigit():
                 inbox_id = int(inbox_id)
-            content = (parsed.get("content") or "").strip()
-            if content and content.startswith("<"):
-                content = strip_html(content)
+            content = strip_html((parsed.get("content") or "").strip())
+            if not content:
+                return {"status": "ignored", "reason": "empty content after strip"}
+
             result = await add_chatwoot_message_to_discuss(
                 conversation_id=conv_id,
                 content=content,
@@ -386,7 +396,9 @@ async def receevi_webhook(request: Request):
     parsed_out = _parse_chatwoot_outgoing_payload(body)
     if parsed_out:
         conv_id = parsed_out["conv_id"]
-        content = parsed_out["content"]
+        content = strip_html((parsed_out.get("content") or "").strip())
+        if not content:
+            return {"status": "ignored", "reason": "Empty message after strip"}
 
         # Skip echo: we just sent this ourselves via Odoo→Chatwoot poll
         if _we_recently_sent_this(conv_id, content):
@@ -404,7 +416,7 @@ async def receevi_webhook(request: Request):
         try:
             result = await add_chatwoot_agent_message_to_discuss(
                 conversation_id=conv_id,
-                content=content,
+                content=content,  # already plain (strip_html)
             )
         except Exception as e:
             logger.exception("Odoo Discuss error (agent): %s", e)
@@ -736,6 +748,7 @@ async def add_chatwoot_message_to_discuss(
             channel_id=channel_id,
             body=content,
             author_partner_id=partner_id,
+            from_chatwoot=True,
         ),
     )
     if msg_result.get("error"):
@@ -769,6 +782,7 @@ async def add_chatwoot_message_to_discuss(
                     channel_id=channel_id,
                     body=content,
                     author_partner_id=partner_id,
+                    from_chatwoot=True,
                 ),
             )
     if msg_result.get("error"):
@@ -806,6 +820,7 @@ async def add_chatwoot_agent_message_to_discuss(
             channel_id=channel_id,
             body=content,
             author_partner_id=agent_partner_id,
+            from_chatwoot=True,
         ),
     )
     if msg_result.get("error"):
@@ -819,10 +834,40 @@ async def add_chatwoot_agent_message_to_discuss(
     return {"channel_id": channel_id, "message_id": msg_id}
 
 
+def _plain_body_for_chatwoot_reply(plain: str) -> str:
+    """
+    Odoo Discuss shows a 'Via Chatwoot' line on synced messages; strip it before
+    sending agent text back to Chatwoot so we do not echo the badge.
+    """
+    p = (plain or "").strip()
+    if p.startswith("Via Chatwoot"):
+        p = p[len("Via Chatwoot") :].lstrip()
+    return p
+
+
+def _mail_author_partner_id(author: Any) -> Optional[int]:
+    """Normalize mail.message author_id from Odoo read (tuple, int, or False)."""
+    if not author:
+        return None
+    if isinstance(author, (list, tuple)) and len(author) >= 1 and author[0]:
+        try:
+            return int(author[0])
+        except (TypeError, ValueError):
+            return None
+    if isinstance(author, int):
+        return author
+    return None
+
+
 async def _poll_odoo_to_receevi() -> None:
     """
     Background task: poll Odoo Discuss for new agent messages,
     send them to Receevi (Chatwoot) as outgoing.
+
+    Only messages authored by the integration Odoo user (ODOO_USERNAME) are sent.
+    Using "exclude contact" in the domain is unsafe: website/contact messages
+    often have author_id False/NULL or a different partner, so they were wrongly
+    treated as agent and echoed back to Chatwoot as Super Admin.
     """
     while True:
         try:
@@ -832,42 +877,56 @@ async def _poll_odoo_to_receevi() -> None:
 
             client = get_odoo_client()
             loop = asyncio.get_event_loop()
+            agent_partner_id = await loop.run_in_executor(
+                None,
+                lambda: client.get_odoo_user_partner_id(),
+            )
+            if not agent_partner_id:
+                logger.warning(
+                    "Odoo→Chatwoot poll: could not resolve agent partner id; skip cycle"
+                )
+                continue
+
             mappings = get_all_conversation_mappings()
 
             for conv_id, data in mappings.items():
                 channel_id = data.get("channel_id")
-                partner_id = data.get("partner_id")
-                if not channel_id or not partner_id:
+                if not channel_id:
                     continue
 
                 last_id = get_last_message_id(conv_id)
                 messages = await loop.run_in_executor(
                     None,
-                    lambda cid=channel_id, pid=partner_id, lid=last_id: client.get_discuss_messages_since(
+                    lambda cid=channel_id, lid=last_id: client.get_discuss_messages_since(
                         channel_id=cid,
                         min_id=lid,
-                        exclude_author_ids=[pid],
                     ),
                 )
 
                 for msg in messages:
-                    plain = strip_html(msg.get("body", ""))
-                    if not plain.strip():
-                        continue
-                    err = await send_receevi_message(
-                        conversation_id=conv_id,
-                        content=plain,
-                        message_type="outgoing",
-                    )
-                    if err.get("error"):
-                        logger.warning(
-                            "Odoo→Chatwoot send failed conv_id=%s: %s",
-                            conv_id,
-                            err.get("error"),
+                    aid = _mail_author_partner_id(msg.get("author_id"))
+                    if aid == agent_partner_id:
+                        plain = _plain_body_for_chatwoot_reply(
+                            strip_html(msg.get("body", ""))
                         )
-                    else:
-                        set_last_message_id(conv_id, msg["id"])
+                        if not plain.strip():
+                            set_last_message_id(conv_id, msg["id"])
+                            continue
+                        err = await send_receevi_message(
+                            conversation_id=conv_id,
+                            content=plain,
+                            message_type="outgoing",
+                        )
+                        if err.get("error"):
+                            logger.warning(
+                                "Odoo→Chatwoot send failed conv_id=%s: %s",
+                                conv_id,
+                                err.get("error"),
+                            )
+                            break
                         _record_sent_to_chatwoot(conv_id, plain)
+
+                    set_last_message_id(conv_id, msg["id"])
 
         except asyncio.CancelledError:
             break

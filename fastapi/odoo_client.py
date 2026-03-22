@@ -1,10 +1,14 @@
 """
 Odoo XML-RPC client for Discuss (mail.channel) and partners.
 Runs sync calls in a thread to work with FastAPI async endpoints.
+
+ServerProxy/xmlrpc is not thread-safe: concurrent webhook workers sharing one
+connection raise http.client.CannotSendRequest (Request-sent). Serialize RPCs.
 """
 import html
 import logging
 import re
+import threading
 import xmlrpc.client
 from typing import Dict, Any, Optional, List
 import os
@@ -49,34 +53,10 @@ class OdooClient:
         self.password = password or ODOO_PASSWORD
         self.uid: Optional[int] = None
         self.models: Optional[Any] = None
+        self._rpc_lock = threading.RLock()
 
-    def get_odoo_user_partner_id(self) -> Optional[int]:
-        """
-        Get the partner_id of the Odoo user (ODOO_USERNAME).
-        Used as author for agent messages synced from Chatwoot.
-        """
-        if not self.uid and not self.authenticate():
-            return None
-        try:
-            users = self.models.execute_kw(
-                self.db,
-                self.uid,
-                self.password,
-                "res.users",
-                "read",
-                [self.uid],
-                {"fields": ["partner_id"]},
-            )
-            if users and users[0].get("partner_id"):
-                pid = users[0]["partner_id"]
-                return pid[0] if isinstance(pid, (list, tuple)) else pid
-            return None
-        except Exception as e:
-            logger.warning("get_odoo_user_partner_id failed: %s", e)
-            return None
-
-    def authenticate(self) -> Optional[int]:
-        """Authenticate with Odoo. Returns uid or None."""
+    def _authenticate_unlocked(self) -> Optional[int]:
+        """Call only while holding self._rpc_lock."""
         try:
             common = xmlrpc.client.ServerProxy(
                 f"{self.url}/xmlrpc/2/common", allow_none=True
@@ -96,62 +76,94 @@ class OdooClient:
             )
             return None
 
+    def get_odoo_user_partner_id(self) -> Optional[int]:
+        """
+        Get the partner_id of the Odoo user (ODOO_USERNAME).
+        Used as author for agent messages synced from Chatwoot.
+        """
+        with self._rpc_lock:
+            if not self.uid and not self._authenticate_unlocked():
+                return None
+            try:
+                users = self.models.execute_kw(
+                    self.db,
+                    self.uid,
+                    self.password,
+                    "res.users",
+                    "read",
+                    [self.uid],
+                    {"fields": ["partner_id"]},
+                )
+                if users and users[0].get("partner_id"):
+                    pid = users[0]["partner_id"]
+                    return pid[0] if isinstance(pid, (list, tuple)) else pid
+                return None
+            except Exception as e:
+                logger.warning("get_odoo_user_partner_id failed: %s", e)
+                return None
+
+    def authenticate(self) -> Optional[int]:
+        """Authenticate with Odoo. Returns uid or None."""
+        with self._rpc_lock:
+            return self._authenticate_unlocked()
+
     def create_helpdesk_ticket(self, ticket_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Create a helpdesk ticket. Uses helpdesk.ticket if available,
         otherwise project.task as fallback.
         """
-        if not self.uid and not self.authenticate():
-            return {"error": "Odoo authentication failed", "id": None}
+        with self._rpc_lock:
+            if not self.uid and not self._authenticate_unlocked():
+                return {"error": "Odoo authentication failed", "id": None}
 
-        partner_id = self._get_or_create_partner(
-            name=ticket_data.get("partner_name"),
-            email=ticket_data.get("partner_email"),
-            phone=ticket_data.get("partner_phone"),
-        )
-        if partner_id is False or partner_id is None:
-            partner_id = 1  # Fallback to first partner (e.g. Public User)
-
-        # Try helpdesk.ticket first (Odoo Helpdesk module)
-        try:
-            ticket_id = self.models.execute_kw(
-                self.db,
-                self.uid,
-                self.password,
-                "helpdesk.ticket",
-                "create",
-                [
-                    {
-                        "name": ticket_data.get("name", "Incoming ticket"),
-                        "description": ticket_data.get("description") or "",
-                        "partner_id": partner_id,
-                        "team_id": 1,
-                    }
-                ],
+            partner_id = self._get_or_create_partner(
+                name=ticket_data.get("partner_name"),
+                email=ticket_data.get("partner_email"),
+                phone=ticket_data.get("partner_phone"),
             )
-            return {"id": ticket_id, "model": "helpdesk.ticket", "status": "created"}
-        except Exception:
-            pass
+            if partner_id is False or partner_id is None:
+                partner_id = 1  # Fallback to first partner (e.g. Public User)
 
-        # Fallback: project.task (Project module)
-        try:
-            ticket_id = self.models.execute_kw(
-                self.db,
-                self.uid,
-                self.password,
-                "project.task",
-                "create",
-                [
-                    {
-                        "name": ticket_data.get("name", "Incoming ticket"),
-                        "description": ticket_data.get("description") or "",
-                        "partner_id": partner_id,
-                    }
-                ],
-            )
-            return {"id": ticket_id, "model": "project.task", "status": "created"}
-        except Exception as e:
-            return {"error": str(e), "id": None}
+            # Try helpdesk.ticket first (Odoo Helpdesk module)
+            try:
+                ticket_id = self.models.execute_kw(
+                    self.db,
+                    self.uid,
+                    self.password,
+                    "helpdesk.ticket",
+                    "create",
+                    [
+                        {
+                            "name": ticket_data.get("name", "Incoming ticket"),
+                            "description": ticket_data.get("description") or "",
+                            "partner_id": partner_id,
+                            "team_id": 1,
+                        }
+                    ],
+                )
+                return {"id": ticket_id, "model": "helpdesk.ticket", "status": "created"}
+            except Exception:
+                pass
+
+            # Fallback: project.task (Project module)
+            try:
+                ticket_id = self.models.execute_kw(
+                    self.db,
+                    self.uid,
+                    self.password,
+                    "project.task",
+                    "create",
+                    [
+                        {
+                            "name": ticket_data.get("name", "Incoming ticket"),
+                            "description": ticket_data.get("description") or "",
+                            "partner_id": partner_id,
+                        }
+                    ],
+                )
+                return {"id": ticket_id, "model": "project.task", "status": "created"}
+            except Exception as e:
+                return {"error": str(e), "id": None}
 
     def create_or_get_discuss_channel(
         self,
@@ -166,187 +178,203 @@ class OdooClient:
         inbox_name: set on channel (chatwoot_inbox_name) so Odoo can list chats by SMS/WhatsApp/Website.
         Returns {"channel_id": int, "created": bool} or {"error": str}.
         """
-        if not self.uid and not self.authenticate():
-            return {"error": "Odoo authentication failed", "channel_id": None}
+        with self._rpc_lock:
+            if not self.uid and not self._authenticate_unlocked():
+                return {"error": "Odoo authentication failed", "channel_id": None}
 
-        # Search for existing chat channel with this partner
-        try:
-            channel_ids = self.models.execute_kw(
-                self.db,
-                self.uid,
-                self.password,
-                "mail.channel",
-                "search",
-                [
+            # Search for existing chat channel with this partner
+            try:
+                channel_ids = self.models.execute_kw(
+                    self.db,
+                    self.uid,
+                    self.password,
+                    "mail.channel",
+                    "search",
                     [
-                        ("channel_type", "=", "chat"),
-                        ("channel_partner_ids", "in", [partner_id]),
-                    ]
-                ],
-                {"limit": 1},
-            )
-            if channel_ids:
-                channel_id = channel_ids[0]
-                # Backfill chatwoot_inbox_name if we have it and the channel doesn't
-                if inbox_name:
-                    try:
-                        channels = self.models.execute_kw(
-                            self.db,
-                            self.uid,
-                            self.password,
-                            "mail.channel",
-                            "read",
-                            [channel_id],
-                            {"fields": ["chatwoot_inbox_name"]},
-                        )
-                        if channels and not channels[0].get("chatwoot_inbox_name"):
-                            self.models.execute_kw(
+                        [
+                            ("channel_type", "=", "chat"),
+                            ("channel_partner_ids", "in", [partner_id]),
+                        ]
+                    ],
+                    {"limit": 1},
+                )
+                if channel_ids:
+                    channel_id = channel_ids[0]
+                    # Backfill chatwoot_inbox_name if we have it and the channel doesn't
+                    if inbox_name:
+                        try:
+                            channels = self.models.execute_kw(
                                 self.db,
                                 self.uid,
                                 self.password,
                                 "mail.channel",
-                                "write",
+                                "read",
                                 [channel_id],
-                                {"chatwoot_inbox_name": inbox_name},
+                                {"fields": ["chatwoot_inbox_name"]},
                             )
-                    except Exception:
-                        pass
-                return {"channel_id": channel_id, "created": False}
-        except Exception:
-            pass
+                            if channels and not channels[0].get("chatwoot_inbox_name"):
+                                self.models.execute_kw(
+                                    self.db,
+                                    self.uid,
+                                    self.password,
+                                    "mail.channel",
+                                    "write",
+                                    [channel_id],
+                                    {"chatwoot_inbox_name": inbox_name},
+                                )
+                        except Exception:
+                            pass
+                    return {"channel_id": channel_id, "created": False}
+            except Exception:
+                pass
 
-        # Create new chat channel (chatwoot_inbox_name requires linhafala_chatwoot module)
-        vals = {
-            "name": channel_name or "Chat",
-            "channel_type": "chat",
-            "channel_partner_ids": [(4, partner_id, 0)],
-        }
-        if inbox_name:
-            vals["chatwoot_inbox_name"] = inbox_name
-        try:
-            channel_id = self.models.execute_kw(
-                self.db,
-                self.uid,
-                self.password,
-                "mail.channel",
-                "create",
-                [vals],
-            )
-            return {"channel_id": channel_id, "created": True}
-        except Exception as e:
-            if inbox_name and "chatwoot_inbox_name" in str(e).lower():
-                vals.pop("chatwoot_inbox_name", None)
-                try:
-                    channel_id = self.models.execute_kw(
-                        self.db,
-                        self.uid,
-                        self.password,
-                        "mail.channel",
-                        "create",
-                        [vals],
-                    )
-                    return {"channel_id": channel_id, "created": True}
-                except Exception as e2:
-                    logger.exception("create_or_get_discuss_channel failed: %s", e2)
-                    return {"error": str(e2), "channel_id": None}
-            logger.exception("create_or_get_discuss_channel failed: %s", e)
-            return {"error": str(e), "channel_id": None}
+            # Create new chat channel (chatwoot_inbox_name requires linhafala_chatwoot module)
+            vals = {
+                "name": channel_name or "Chat",
+                "channel_type": "chat",
+                "channel_partner_ids": [(4, partner_id, 0)],
+            }
+            if inbox_name:
+                vals["chatwoot_inbox_name"] = inbox_name
+            try:
+                channel_id = self.models.execute_kw(
+                    self.db,
+                    self.uid,
+                    self.password,
+                    "mail.channel",
+                    "create",
+                    [vals],
+                )
+                return {"channel_id": channel_id, "created": True}
+            except Exception as e:
+                if inbox_name and "chatwoot_inbox_name" in str(e).lower():
+                    vals.pop("chatwoot_inbox_name", None)
+                    try:
+                        channel_id = self.models.execute_kw(
+                            self.db,
+                            self.uid,
+                            self.password,
+                            "mail.channel",
+                            "create",
+                            [vals],
+                        )
+                        return {"channel_id": channel_id, "created": True}
+                    except Exception as e2:
+                        logger.exception("create_or_get_discuss_channel failed: %s", e2)
+                        return {"error": str(e2), "channel_id": None}
+                logger.exception("create_or_get_discuss_channel failed: %s", e)
+                return {"error": str(e), "channel_id": None}
 
     def add_message_to_discuss(
         self,
         channel_id: int,
         body: str,
         author_partner_id: int,
+        from_chatwoot: bool = False,
     ) -> Dict[str, Any]:
         """
         Add a message to a Discuss channel. Author is the partner (contact).
         Uses message_post on mail.channel (more reliable than direct mail.message create).
+        from_chatwoot: show a small "Via Chatwoot" line in Discuss (webhook sync only).
         Returns {"message_id": int} or {"error": str}.
         """
-        if not self.uid and not self.authenticate():
-            return {"error": "Odoo authentication failed", "message_id": None}
-
         body_html = f"<p>{_html_escape(body)}</p>" if body else "<p></p>"
-
-        try:
-            # Use message_post on the channel - supports author_id for external sender
-            msg_id = self.models.execute_kw(
-                self.db,
-                self.uid,
-                self.password,
-                "mail.channel",
-                "message_post",
-                [channel_id],
-                {
-                    "body": body_html,
-                    "message_type": "comment",
-                    "subtype_xmlid": "mail.mt_comment",
-                    "author_id": author_partner_id,
-                },
+        if from_chatwoot:
+            body_html = (
+                '<p><span style="opacity:0.8;font-size:12px;color:#6c757d;">'
+                "Via Chatwoot</span></p>"
+                + body_html
             )
-            return {"message_id": msg_id}
-        except Exception as e:
-            logger.exception("add_message_to_discuss failed: %s", e)
-            return {"error": str(e), "message_id": None}
+
+        with self._rpc_lock:
+            if not self.uid and not self._authenticate_unlocked():
+                return {"error": "Odoo authentication failed", "message_id": None}
+
+            try:
+                # Use message_post on the channel - supports author_id for external sender
+                msg_id = self.models.execute_kw(
+                    self.db,
+                    self.uid,
+                    self.password,
+                    "mail.channel",
+                    "message_post",
+                    [channel_id],
+                    {
+                        "body": body_html,
+                        "message_type": "comment",
+                        "subtype_xmlid": "mail.mt_comment",
+                        "author_id": author_partner_id,
+                    },
+                )
+                return {"message_id": msg_id}
+            except Exception as e:
+                logger.exception("add_message_to_discuss failed: %s", e)
+                return {"error": str(e), "message_id": None}
 
     def get_discuss_messages_since(
         self,
         channel_id: int,
         min_id: int,
         exclude_author_ids: Optional[List[int]] = None,
+        include_author_ids: Optional[List[int]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Get messages in a channel with id > min_id.
-        exclude_author_ids: skip messages from these partners (e.g. the contact - we only want agent replies).
-        Returns list of {"id": int, "body": str, "author_id": int}.
+        include_author_ids: only these authors (e.g. integration agent partner).
+        exclude_author_ids: skip these authors (legacy; prefer filtering in caller).
+        If neither set, return all matching comments (caller decides what to sync).
+        Returns list of {"id": int, "body": str, "author_id": ...}.
         """
-        if not self.uid and not self.authenticate():
-            return []
-
         domain = [
             ("model", "=", "mail.channel"),
             ("res_id", "=", channel_id),
             ("id", ">", min_id),
             ("message_type", "=", "comment"),
         ]
-        if exclude_author_ids:
+        if include_author_ids:
+            domain.append(("author_id", "in", include_author_ids))
+        elif exclude_author_ids:
             domain.append(("author_id", "not in", exclude_author_ids))
 
-        try:
-            msg_ids = self.models.execute_kw(
-                self.db,
-                self.uid,
-                self.password,
-                "mail.message",
-                "search",
-                [domain],
-                {"order": "id asc"},
-            )
-            if not msg_ids:
+        with self._rpc_lock:
+            if not self.uid and not self._authenticate_unlocked():
                 return []
 
-            msg_records = self.models.execute_kw(
-                self.db,
-                self.uid,
-                self.password,
-                "mail.message",
-                "read",
-                [msg_ids],
-                {"fields": ["id", "body", "author_id"]},
-            )
-            result = []
-            for m in msg_records:
-                author_id = m.get("author_id")
-                if isinstance(author_id, (list, tuple)) and len(author_id) >= 1:
-                    author_id = author_id[0]
-                result.append({
-                    "id": m["id"],
-                    "body": m.get("body") or "",
-                    "author_id": author_id,
-                })
-            return result
-        except Exception:
-            return []
+            try:
+                msg_ids = self.models.execute_kw(
+                    self.db,
+                    self.uid,
+                    self.password,
+                    "mail.message",
+                    "search",
+                    [domain],
+                    {"order": "id asc"},
+                )
+                if not msg_ids:
+                    return []
+
+                msg_records = self.models.execute_kw(
+                    self.db,
+                    self.uid,
+                    self.password,
+                    "mail.message",
+                    "read",
+                    [msg_ids],
+                    {"fields": ["id", "body", "author_id"]},
+                )
+                result = []
+                for m in msg_records:
+                    author_id = m.get("author_id")
+                    if isinstance(author_id, (list, tuple)) and len(author_id) >= 1:
+                        author_id = author_id[0]
+                    result.append({
+                        "id": m["id"],
+                        "body": m.get("body") or "",
+                        "author_id": author_id,
+                    })
+                return result
+            except Exception:
+                return []
 
     def _get_or_create_partner(
         self,
@@ -355,8 +383,9 @@ class OdooClient:
         phone: Optional[str] = None,
     ) -> int:
         """Find existing partner by email/phone or create new one. Returns partner id."""
+        # Caller must hold self._rpc_lock (create_helpdesk_ticket).
         if not self.uid:
-            self.authenticate()
+            self._authenticate_unlocked()
 
         search_domain = []
         if email:
