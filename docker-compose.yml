@@ -21,128 +21,113 @@ services:
     image: roboboinc/odoo16:latest #127.0.0.1:5000/odoostack
     # build: .  # Commented out - using pre-built image in production
     volumes:
-        - ./addons-extra:/mnt/extra-addons
-        - ./config:/etc/odoo
-        - odoo-web-data:/var/lib/odoo
+      - odoo-web-data:/var/lib/odoo
+      # Config and custom modules are now bundled in the image
+      # Removed bind mounts for swarm compatibility:
+      # - ./config:/etc/odoo
+      # - ../odoo_custom_modules:/mnt/extra-addons
     env_file:
-        - .env
+      - .env
+    ports:
+      - "8069:8069"
+    command: odoo --config=/etc/odoo/odoo.conf
     networks:
       - traefik-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8069/web/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     deploy:
-      replicas: 1  # Define the number of replicas
+      replicas: 2
+      resources:
+        limits:
+          cpus: "1"
+          memory: "2G"
+        reservations:
+          cpus: "0.5"
+          memory: "1G"
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
       restart_policy:
         condition: on-failure
+        delay: 5s
+        max_attempts: 3
       labels:
-        - "traefik.enable=true"
-        - "traefik.http.services.odoo.loadbalancer.server.port=8069"
-        # WebSocket Headers Middleware
-        - "traefik.http.middlewares.websocket-headers.headers.customrequestheaders.Connection=Upgrade"
-        - "traefik.http.middlewares.websocket-headers.headers.customrequestheaders.Upgrade=websocket"
+        - traefik.enable=true
+
+        # Service: point to Odoo internal port
+        - traefik.http.services.odoo.loadbalancer.server.port=8069
+        
+        # Sticky sessions - CRITICAL for multi-replica deployments
+        - traefik.http.services.odoo.loadbalancer.sticky=true
+        - traefik.http.services.odoo.loadbalancer.sticky.cookie.httponly=true
+        - traefik.http.services.odoo.loadbalancer.sticky.cookie.secure=true
+        - traefik.http.services.odoo.loadbalancer.sticky.cookie.samesite=Lax
+
+        # Router (staging)
+        - traefik.http.routers.odoo-robobo.rule=Host(`staging.linha1458.moz.wfp.org`)
+        - traefik.http.routers.odoo-robobo.entrypoints=web
+        - traefik.http.routers.odoo-robobo.service=odoo
+        - traefik.http.routers.odoo-robobo.middlewares=gzip,limit,cors-allow-offline
+
         # Middleware for odoo.robobo.org
         - "traefik.http.routers.odoo-robobo.rule=Host(`odoo.robobo.org`)"
         - "traefik.http.middlewares.robobo-headers.headers.customrequestheaders.X-Odoo-dbfilter=robobo"
-        - "traefik.http.routers.odoo-robobo.middlewares=gzip,sslheader,limit,websocket-headers,robobo-headers"
+        - "traefik.http.routers.odoo-robobo.middlewares=gzip,sslheader,limit,websocket-headers,robobo-headers,cors-allow-offline"
         - "traefik.http.routers.odoo-robobo.entrypoints=websecure"
         - "traefik.http.routers.odoo-robobo.tls.certresolver=myresolver"
         # Middleware for odoo.linhafala.org.mz
         - "traefik.http.routers.odoo-lfc.rule=Host(`odoo.linhafala.org.mz`) || Host(`odoo.app.linhafala.org.mz`)"
         - "traefik.http.middlewares.lfc-headers.headers.customrequestheaders.X-Odoo-dbfilter=lfc_final"
-        - "traefik.http.routers.odoo-lfc.middlewares=gzip,sslheader,limit,websocket-headers,lfc-headers"
+        - "traefik.http.routers.odoo-lfc.middlewares=gzip,sslheader,limit,websocket-headers,lfc-headers,cors-allow-offline"
         - "traefik.http.routers.odoo-lfc.entrypoints=websecure"
         - "traefik.http.routers.odoo-lfc.tls.certresolver=myresolver"
         # Middleware for client-demo.odoo.robobo.org.conf
         - "traefik.http.routers.odoo-demos.rule=Host(`client-demo.odoo.robobo.org`)"
         - "traefik.http.middlewares.demos-headers.headers.customrequestheaders.X-Odoo-dbfilter=maisvida"
-        - "traefik.http.routers.odoo-demos.middlewares=gzip,sslheader,limit,websocket-headers,demos-headers"
+        - "traefik.http.routers.odoo-demos.middlewares=gzip,sslheader,limit,websocket-headers,demos-headers,cors-allow-offline"
         - "traefik.http.routers.odoo-demos.entrypoints=websecure"
         - "traefik.http.routers.odoo-demos.tls.certresolver=myresolver"
-        #================== middlewares ==================================
-        - "traefik.http.middlewares.gzip.compress=true"
-        - "traefik.http.middlewares.sslheader.headers.customrequestheaders.X-Forwarded-Proto=https"
-        - "traefik.http.middlewares.limit.buffering.memRequestBodyBytes=20971520"
-        - "traefik.http.middlewares.limit.buffering.maxRequestBodyBytes=20971520"
-        - "traefik.http.middlewares.odoo-headers.headers.customrequestheaders.X-Real-IP=remote_addr"
-        - "traefik.http.middlewares.odoo-headers.headers.customrequestheaders.X-Forwarded-For=remote_addr"
-        - "traefik.http.middlewares.odoo-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
-        - "traefik.http.middlewares.odoo-headers.headers.customrequestheaders.Host=host"
-        - "traefik.http.routers.odoo.middlewares=odoo-headers"
 
-  # Receevi (Chatwoot Community Edition) - Open Source Omnichannel Platform
-  # Note: Connects to external Digital Ocean PostgreSQL database via .env config
-  receevi-web:
-    image: chatwoot/chatwoot:latest
-    depends_on:
-      - redis
-    env_file:
-        - .env
-    volumes:
-      - receevi_data:/app/storage
-    networks:
-      - traefik-network
-    deploy:
-      replicas: 1
-      restart_policy:
-        condition: on-failure
-      labels:
-        - "traefik.enable=true"
-        - "traefik.http.services.receevi.loadbalancer.server.port=3000"
-        - "traefik.http.routers.receevi-web.rule=Host(`oc.linhafala.org.mz`)"
-        - "traefik.http.routers.receevi-web.entrypoints=websecure"
-        - "traefik.http.routers.receevi-web.tls.certresolver=myresolver"
-        - "traefik.http.routers.receevi-web.middlewares=gzip,sslheader,limit"
-    command: ["bundle", "exec", "rails", "s", "-p", "3000", "-b", "0.0.0.0"]
+        # Proxy offline PWA for /pt/pwa and /pwa (locale-aware)
+        - traefik.http.routers.pwa-pt.rule=Host(`staging.linha1458.moz.wfp.org`) && PathPrefix(`/pt/pwa`)
+        - traefik.http.routers.pwa-pt.entrypoints=web
+        - traefik.http.routers.pwa-pt.service=pwa-s3
+        - traefik.http.routers.pwa.rule=Host(`staging.linha1458.moz.wfp.org`) && PathPrefix(`/pwa`)
+        - traefik.http.routers.pwa.entrypoints=web
+        - traefik.http.routers.pwa.service=pwa-s3
 
-  # Receevi Sidekiq Worker
-  receevi-sidekiq:
-    image: chatwoot/chatwoot:latest
-    depends_on:
-      - redis
-      - receevi-web
-    env_file:
-        - .env
-    volumes:
-      - receevi_data:/app/storage
-    networks:
-      - traefik-network
-    deploy:
-      replicas: 1
-      restart_policy:
-        condition: on-failure
-    command: ["bundle", "exec", "sidekiq", "-C", "config/sidekiq.yml"]
+        # S3 service for offline app (replace with your actual S3 endpoint)
+        - traefik.http.services.pwa-s3.loadbalancer.server.url=https://offline.linha1458.moz.wfp.org/
 
-  # FastAPI Integration Service
-  fastapi:
-    build: ./fastapi
-    image: fastapi-integration:latest
-    depends_on:
-      - redis
-      - receevi-web
-      - odoo
-    env_file:
-        - .env
-    volumes:
-      - ./fastapi:/app
-    networks:
-      - traefik-network
-    deploy:
-      replicas: 1
-      restart_policy:
-        condition: on-failure
-      labels:
-        - "traefik.enable=true"
-        - "traefik.http.services.fastapi.loadbalancer.server.port=8000"
-        - "traefik.http.routers.fastapi.rule=Host(`api.linhafala.org.mz`)"
-        - "traefik.http.routers.fastapi.entrypoints=websecure"
-        - "traefik.http.routers.fastapi.tls.certresolver=myresolver"
-    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+        # Optional: Path rewrite so /pt/pwa/* and /pwa/* map to S3 root
+        - traefik.http.middlewares.pwa-strip-prefix.stripprefix.prefixes=/pt/pwa,/pwa
+        - traefik.http.routers.pwa-pt.middlewares=pwa-strip-prefix
+        - traefik.http.routers.pwa.middlewares=pwa-strip-prefix
+        # CORS middleware (Traefik v2)
+        - traefik.http.middlewares.cors-allow-offline.headers.accesscontrolalloworiginlist=https://offline.linha1458.moz.wfp.org
+        - traefik.http.middlewares.cors-allow-offline.headers.accesscontrolallowmethods=GET,POST,PUT,DELETE,OPTIONS
+        - traefik.http.middlewares.cors-allow-offline.headers.accesscontrolallowheaders=Authorization,Content-Type,Accept
+        - traefik.http.middlewares.cors-allow-offline.headers.accesscontrolexposeheaders=Authorization
+        - traefik.http.middlewares.cors-allow-offline.headers.accesscontrolallowcredentials=true
+        - traefik.http.middlewares.cors-allow-offline.headers.addvaryheader=true
+        - traefik.http.middlewares.cors-allow-offline.headers.accesscontrolmaxage=86400
+
+        # Other middlewares
+        - traefik.http.middlewares.gzip.compress=true
+        - traefik.http.middlewares.limit.buffering.memRequestBodyBytes=20971520
+        - traefik.http.middlewares.limit.buffering.maxRequestBodyBytes=20971520
 
 volumes:
-    odoo-web-data:
-      driver: local
-    redis_data:
-      driver: local
-    receevi_data:
-      driver: local
+  odoo-web-data:
+    driver: local
+    # For production with multiple replicas, consider using:
+    # driver: nfs  (or another distributed storage driver)
+    # To enable shared attachment storage across all Odoo instances
 
 networks:
   traefik-network:
