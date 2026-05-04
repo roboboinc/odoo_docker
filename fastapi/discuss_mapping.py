@@ -90,6 +90,15 @@ def set_last_message_id(conversation_id: int, message_id: int) -> None:
     _save(data)
 
 
+def bump_last_message_id_if_newer(conversation_id: int, message_id: int) -> None:
+    """Advance last_message_id only if message_id is newer (avoids poll re-processing contact posts)."""
+    if not message_id:
+        return
+    current = get_last_message_id(conversation_id)
+    if message_id > current:
+        set_last_message_id(conversation_id, message_id)
+
+
 def remove_channel_for_conversation(conversation_id: int) -> None:
     """Remove mapping for a conversation (e.g. when Odoo channel was deleted)."""
     data = _load()

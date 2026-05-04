@@ -5,6 +5,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
+from urllib.parse import urljoin, urlparse, urlunparse
 
 # Dedupe: skip outgoing webhooks for messages we just sent (Odoo→Chatwoot poll)
 # Prevents duplicate in Odoo when Chatwoot echoes our send back via webhook.
@@ -41,7 +42,17 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
+
+def _log_preview(text: Optional[str], max_len: int = 120) -> str:
+    """Short one-line preview for logs (no newlines)."""
+    s = (text or "").replace("\n", " ").strip()
+    if len(s) <= max_len:
+        return s
+    return s[: max_len - 3] + "..."
+
+
 from discuss_mapping import (
+    bump_last_message_id_if_newer,
     get_channel_for_conversation,
     get_all_conversation_mappings,
     get_last_message_id,
@@ -54,6 +65,10 @@ from odoo_client import get_odoo_client, strip_html
 
 # Configuration
 RECEEVI_URL = (os.getenv("RECEEVI_URL", "http://receevi-web:3000") or "").rstrip("/")
+# Chamadas server-side (poll Odoo→Chatwoot) devem usar o hostname Docker/Swarm (ex.: receevi-web:3000).
+# RECEEVI_URL público (https://oc...) dentro do contentor falha muitas vezes (hairpin, DNS, TLS).
+RECEEVI_INTERNAL_URL = (os.getenv("RECEEVI_INTERNAL_URL") or "").rstrip("/")
+CHATWOOT_API_BASE = RECEEVI_INTERNAL_URL or RECEEVI_URL
 RECEEVI_API_KEY = os.getenv("RECEEVI_API_KEY", "")
 RECEEVI_ACCOUNT_ID = os.getenv("RECEEVI_ACCOUNT_ID", "1")
 RECEEVI_SMS_INBOX_ID = os.getenv("RECEEVI_SMS_INBOX_ID", "")
@@ -62,6 +77,83 @@ ODOO_DB = os.getenv("ODOO_DB", "odoo")
 ODOO_USERNAME = os.getenv("ODOO_USERNAME", "admin")
 ODOO_PASSWORD = os.getenv("ODOO_PASSWORD", "admin")
 DISCUSS_POLL_INTERVAL = int(os.getenv("DISCUSS_POLL_INTERVAL", "5"))  # seconds
+
+# Hostnames onde o Chatwoot (Puma) corre só em HTTP na rede Docker; Rails pode devolver
+# redirects 308 para https://receevi-web:3000 → TLS falha ("SSL record layer failure").
+CHATWOOT_INTERNAL_HTTP_HOSTS = frozenset(
+    h.strip().lower()
+    for h in os.getenv("CHATWOOT_INTERNAL_HTTP_HOSTS", "receevi-web").split(",")
+    if h.strip()
+)
+
+
+def _normalize_chatwoot_url(url: str) -> str:
+    """Força http em hosts internos quando Rails redireciona para https inexistente no :3000."""
+    try:
+        p = urlparse(url)
+    except Exception:
+        return url
+    host = (p.hostname or "").lower()
+    if host in CHATWOOT_INTERNAL_HTTP_HOSTS and p.scheme == "https":
+        return urlunparse(p._replace(scheme="http"))
+    return url
+
+
+def _chatwoot_headers_for_url(url: str, base: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """
+    Rails/Chatwoot com force_ssl responde 308 http→https mesmo no Puma sem TLS.
+    X-Forwarded-Proto faz o Rack tratar o pedido como já em HTTPS e não redirecionar.
+    """
+    h = dict(base or {})
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        host = ""
+    if host in CHATWOOT_INTERNAL_HTTP_HOSTS:
+        h.setdefault("X-Forwarded-Proto", "https")
+        h.setdefault("X-Forwarded-Ssl", "on")
+    return h
+
+
+async def _chatwoot_request(
+    method: str,
+    url: str,
+    *,
+    timeout: float = 30.0,
+    **kwargs: Any,
+) -> httpx.Response:
+    """
+    Pedido à API Chatwoot com redirects manuais.
+    Hosts internos: headers X-Forwarded-Proto para evitar 308 http↔https em ciclo.
+    """
+    url = _normalize_chatwoot_url(url)
+    method_u = method.upper()
+    headers_base = dict(kwargs.pop("headers", None) or {})
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+        redirect_codes = frozenset({301, 302, 303, 307, 308})
+        for _ in range(16):
+            hdrs = _chatwoot_headers_for_url(url, headers_base)
+            resp = await client.request(method_u, url, headers=hdrs, **kwargs)
+            if resp.status_code not in redirect_codes:
+                return resp
+            loc = resp.headers.get("location")
+            if not loc:
+                return resp
+            next_url = _normalize_chatwoot_url(urljoin(str(resp.url), loc))
+            # Sem X-Forwarded-Proto, Location https→normalize http fica igual ao URL atual;
+            # não devolver o 308: seguir para o mesmo URL já com hdrs acima (ou avançar).
+            if next_url == url:
+                return resp
+            url = next_url
+            if resp.status_code == 303 and method_u == "POST":
+                method_u = "GET"
+                kwargs = {
+                    k: v
+                    for k, v in kwargs.items()
+                    if k not in ("json", "data", "content", "files")
+                }
+        return resp
+
 
 # Background task control
 _poll_task: Optional[asyncio.Task] = None
@@ -73,8 +165,9 @@ async def lifespan(app: FastAPI):
     global _poll_task
     if RECEEVI_API_KEY:
         logger.info(
-            "Odoo→Chatwoot poll started (account_id=%s). Agent replies will sync.",
+            "Odoo→Chatwoot poll started (account_id=%s, chatwoot_api=%s). Agent replies will sync.",
             RECEEVI_ACCOUNT_ID,
+            CHATWOOT_API_BASE,
         )
     else:
         logger.warning(
@@ -154,9 +247,8 @@ async def health_check():
     
     # Check Receevi (Rails app can take 1–2 min to boot)
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(f"{RECEEVI_URL}/api")
-            health_status["receevi"] = "healthy" if response.status_code == 200 else "unhealthy"
+        response = await _chatwoot_request("GET", f"{CHATWOOT_API_BASE}/api", timeout=5.0)
+        health_status["receevi"] = "healthy" if response.status_code == 200 else "unhealthy"
     except Exception as e:
         health_status["receevi"] = f"error: {str(e)}"
     
@@ -359,6 +451,13 @@ async def receevi_webhook(request: Request):
             content = (parsed.get("content") or "").strip()
             if content and content.startswith("<"):
                 content = strip_html(content)
+            logger.info(
+                "Receevi→Odoo (contact): conv_id=%s inbox_id=%s partner=%s content_preview=%r",
+                conv_id,
+                inbox_id,
+                parsed.get("partner_name") or parsed.get("partner_phone") or "?",
+                _log_preview(content, 160),
+            )
             result = await add_chatwoot_message_to_discuss(
                 conversation_id=conv_id,
                 content=content,
@@ -373,9 +472,19 @@ async def receevi_webhook(request: Request):
             raise HTTPException(status_code=502, detail=str(e))
 
         if result.get("error"):
-            logger.error("Odoo error: %s", result["error"])
+            logger.error(
+                "Receevi→Odoo FAILED: conv_id=%s odoo_error=%s",
+                conv_id,
+                result["error"],
+            )
             raise HTTPException(status_code=502, detail=result["error"])
 
+        logger.info(
+            "Receevi→Odoo OK: conv_id=%s odoo_channel_id=%s odoo_message_id=%s",
+            conv_id,
+            result.get("channel_id"),
+            result.get("message_id"),
+        )
         return {
             "status": "success",
             "channel_id": result.get("channel_id"),
@@ -401,6 +510,11 @@ async def receevi_webhook(request: Request):
                 migrate_conversation_id(conv_id, resolved)
                 conv_id = resolved
 
+        logger.info(
+            "Receevi→Odoo (agent): conv_id=%s content_preview=%r",
+            conv_id,
+            _log_preview(content, 160),
+        )
         try:
             result = await add_chatwoot_agent_message_to_discuss(
                 conversation_id=conv_id,
@@ -411,9 +525,19 @@ async def receevi_webhook(request: Request):
             raise HTTPException(status_code=502, detail=str(e))
 
         if result.get("error"):
-            logger.error("Odoo error (agent): %s", result["error"])
+            logger.error(
+                "Receevi→Odoo (agent) FAILED: conv_id=%s odoo_error=%s",
+                conv_id,
+                result["error"],
+            )
             raise HTTPException(status_code=502, detail=result["error"])
 
+        logger.info(
+            "Receevi→Odoo (agent) OK: conv_id=%s odoo_channel_id=%s odoo_message_id=%s",
+            conv_id,
+            result.get("channel_id"),
+            result.get("message_id"),
+        )
         return {
             "status": "success",
             "channel_id": result.get("channel_id"),
@@ -546,15 +670,15 @@ async def create_receevi_conversation(conversation_data: Dict[str, Any]) -> Dict
     """Create a conversation in Receevi (Chatwoot API)."""
     account_id = conversation_data.get("account_id") or RECEEVI_ACCOUNT_ID
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{RECEEVI_URL}/api/v1/accounts/{account_id}/conversations",
-                headers={"api_access_token": RECEEVI_API_KEY},
-                json=conversation_data,
-            )
-            if response.status_code in [200, 201]:
-                return response.json() if response.content else {}
-            return {"error": response.text, "id": None}
+        response = await _chatwoot_request(
+            "POST",
+            f"{CHATWOOT_API_BASE}/api/v1/accounts/{account_id}/conversations",
+            headers={"api_access_token": RECEEVI_API_KEY},
+            json=conversation_data,
+        )
+        if response.status_code in [200, 201]:
+            return response.json() if response.content else {}
+        return {"error": response.text, "id": None}
     except Exception as e:
         return {"error": str(e), "id": None}
 
@@ -573,28 +697,28 @@ async def resolve_display_id_to_conversation_id(
         params = {"status": "all", "page": 1}
         if inbox_id:
             params["inbox_id"] = inbox_id
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{RECEEVI_URL}/api/v1/accounts/{RECEEVI_ACCOUNT_ID}/conversations",
-                headers={"api_access_token": RECEEVI_API_KEY},
-                params=params,
-            )
-            if response.status_code != 200:
-                return None
-            data = response.json()
-            if isinstance(data, list):
-                conversations = data
-            elif isinstance(data, dict):
-                payload = data.get("data") or data.get("payload") or data
-                conversations = payload if isinstance(payload, list) else (payload.get("conversations", []) or [])
-            else:
-                conversations = []
-            for c in conversations:
-                cid = c.get("id")
-                did = c.get("display_id")
-                if did is not None and int(did) == int(display_id):
-                    return int(cid) if cid is not None else None
+        response = await _chatwoot_request(
+            "GET",
+            f"{CHATWOOT_API_BASE}/api/v1/accounts/{RECEEVI_ACCOUNT_ID}/conversations",
+            headers={"api_access_token": RECEEVI_API_KEY},
+            params=params,
+        )
+        if response.status_code != 200:
             return None
+        data = response.json()
+        if isinstance(data, list):
+            conversations = data
+        elif isinstance(data, dict):
+            payload = data.get("data") or data.get("payload") or data
+            conversations = payload if isinstance(payload, list) else (payload.get("conversations", []) or [])
+        else:
+            conversations = []
+        for c in conversations:
+            cid = c.get("id")
+            did = c.get("display_id")
+            if did is not None and int(did) == int(display_id):
+                return int(cid) if cid is not None else None
+        return None
     except Exception as e:
         logger.warning("resolve_display_id_to_conversation_id failed: %s", e)
         return None
@@ -615,24 +739,24 @@ async def get_inbox_name(inbox_id: Optional[int]) -> Optional[str]:
     if inbox_id in _inbox_name_cache:
         return _inbox_name_cache[inbox_id]
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{RECEEVI_URL}/api/v1/accounts/{RECEEVI_ACCOUNT_ID}/inboxes",
-                headers={"api_access_token": RECEEVI_API_KEY},
-            )
-            if response.status_code != 200:
-                return None
-            data = response.json()
-            payload = data.get("payload") if isinstance(data, dict) else data
-            if not isinstance(payload, list):
-                return None
-            for inbox in payload:
-                iid = inbox.get("id")
-                name = inbox.get("name")
-                if iid is not None and int(iid) == inbox_id and name:
-                    _inbox_name_cache[inbox_id] = str(name).strip()
-                    return _inbox_name_cache[inbox_id]
+        response = await _chatwoot_request(
+            "GET",
+            f"{CHATWOOT_API_BASE}/api/v1/accounts/{RECEEVI_ACCOUNT_ID}/inboxes",
+            headers={"api_access_token": RECEEVI_API_KEY},
+        )
+        if response.status_code != 200:
             return None
+        data = response.json()
+        payload = data.get("payload") if isinstance(data, dict) else data
+        if not isinstance(payload, list):
+            return None
+        for inbox in payload:
+            iid = inbox.get("id")
+            name = inbox.get("name")
+            if iid is not None and int(iid) == inbox_id and name:
+                _inbox_name_cache[inbox_id] = str(name).strip()
+                return _inbox_name_cache[inbox_id]
+        return None
     except Exception as e:
         logger.warning("get_inbox_name failed for inbox_id=%s: %s", inbox_id, e)
         return None
@@ -648,21 +772,43 @@ async def send_receevi_message(
     message_type: "outgoing" = agent reply, "incoming" = contact message
     """
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{RECEEVI_URL}/api/v1/accounts/{RECEEVI_ACCOUNT_ID}/conversations/{conversation_id}/messages",
-                headers={"api_access_token": RECEEVI_API_KEY},
-                json={
-                    "content": content,
-                    "message_type": message_type,
-                    "private": False,
-                    "content_type": "text",
-                },
+        response = await _chatwoot_request(
+            "POST",
+            f"{CHATWOOT_API_BASE}/api/v1/accounts/{RECEEVI_ACCOUNT_ID}/conversations/{conversation_id}/messages",
+            headers={"api_access_token": RECEEVI_API_KEY},
+            json={
+                "content": content,
+                "message_type": message_type,
+                "private": False,
+                "content_type": "text",
+            },
+        )
+        if response.status_code in [200, 201]:
+            data = response.json() if response.content else {}
+            cw_id = data.get("id") if isinstance(data, dict) else None
+            logger.info(
+                "Odoo→Receevi API OK: conv_id=%s message_type=%s chatwoot_message_id=%s",
+                conversation_id,
+                message_type,
+                cw_id,
             )
-            if response.status_code in [200, 201]:
-                return response.json()
-            return {"error": response.text}
+            return data
+        body = (response.text or "")[:500]
+        logger.warning(
+            "Odoo→Receevi API FAILED: conv_id=%s status=%s location=%r body_preview=%r url=%s",
+            conversation_id,
+            response.status_code,
+            response.headers.get("location"),
+            body,
+            response.request.url,
+        )
+        return {"error": response.text or response.reason_phrase}
     except Exception as e:
+        logger.warning(
+            "Odoo→Receevi API exception: conv_id=%s err=%s",
+            conversation_id,
+            e,
+        )
         return {"error": str(e)}
 
 
@@ -694,6 +840,13 @@ async def add_chatwoot_message_to_discuss(
     if partner_id in (False, None):
         partner_id = 1
 
+    logger.info(
+        "Odoo sync: conv_id=%s partner_id=%s content_preview=%r",
+        conversation_id,
+        partner_id,
+        _log_preview(content, 160),
+    )
+
     # Prefer inbox name from webhook; else resolve from Chatwoot API
     if not inbox_name and inbox_id:
         inbox_name = await get_inbox_name(inbox_id)
@@ -707,8 +860,23 @@ async def add_chatwoot_message_to_discuss(
 
     if mapping:
         channel_id = mapping["channel_id"]
+        mapped_pid = mapping.get("partner_id")
+        logger.info(
+            "Odoo channel reuse: conv_id=%s channel_id=%s mapped_partner_id=%s",
+            conversation_id,
+            channel_id,
+            mapped_pid,
+        )
+        # Keep contact partner in sync (avoids poll mis-classifying author when partner was recreated)
+        if mapped_pid != partner_id:
+            set_channel_for_conversation(
+                conversation_id,
+                channel_id,
+                partner_id,
+                inbox_id=inbox_id if inbox_id is not None else mapping.get("inbox_id"),
+            )
         # Backfill inbox_id in mapping if we have it (e.g. first message had no inbox, now it does)
-        if inbox_id is not None and mapping.get("inbox_id") is None:
+        elif inbox_id is not None and mapping.get("inbox_id") is None:
             set_channel_for_conversation(
                 conversation_id, channel_id, mapping["partner_id"], inbox_id=inbox_id
             )
@@ -725,6 +893,12 @@ async def add_chatwoot_message_to_discuss(
         if result.get("error"):
             return {"error": result["error"], "channel_id": None}
         channel_id = result["channel_id"]
+        logger.info(
+            "Odoo channel create/find: conv_id=%s channel_id=%s created=%s",
+            conversation_id,
+            channel_id,
+            result.get("created"),
+        )
         # Always set mapping so poll can send agent replies to Chatwoot/WhatsApp.
         set_channel_for_conversation(
             conversation_id, channel_id, partner_id, inbox_id=inbox_id
@@ -772,9 +946,25 @@ async def add_chatwoot_message_to_discuss(
                 ),
             )
     if msg_result.get("error"):
+        logger.error(
+            "Odoo message_post FAILED: conv_id=%s channel_id=%s error=%s",
+            conversation_id,
+            channel_id,
+            msg_result["error"],
+        )
         return {"error": msg_result["error"], "channel_id": channel_id}
 
-    return {"channel_id": channel_id, "message_id": msg_result.get("message_id")}
+    mid = msg_result.get("message_id")
+    logger.info(
+        "Odoo message_post OK: conv_id=%s channel_id=%s odoo_mail_message_id=%s",
+        conversation_id,
+        channel_id,
+        mid,
+    )
+    # So Odoo→Chatwoot poll does not treat this contact message as an "agent" reply to push back
+    if mid:
+        bump_last_message_id_if_newer(conversation_id, int(mid))
+    return {"channel_id": channel_id, "message_id": mid}
 
 
 async def add_chatwoot_agent_message_to_discuss(
@@ -787,6 +977,10 @@ async def add_chatwoot_agent_message_to_discuss(
     """
     mapping = get_channel_for_conversation(conversation_id)
     if not mapping:
+        logger.warning(
+            "Odoo agent sync: no mapping for conv_id=%s (contact message never synced?)",
+            conversation_id,
+        )
         return {"error": f"No Odoo channel for conversation {conversation_id}", "channel_id": None}
 
     channel_id = mapping["channel_id"]
@@ -809,6 +1003,12 @@ async def add_chatwoot_agent_message_to_discuss(
         ),
     )
     if msg_result.get("error"):
+        logger.error(
+            "Odoo agent message_post FAILED: conv_id=%s channel_id=%s error=%s",
+            conversation_id,
+            channel_id,
+            msg_result["error"],
+        )
         return {"error": msg_result["error"], "channel_id": channel_id}
 
     # Prevent poll from re-sending this message to Chatwoot
@@ -816,6 +1016,13 @@ async def add_chatwoot_agent_message_to_discuss(
     if msg_id:
         set_last_message_id(conversation_id, msg_id)
 
+    logger.info(
+        "Odoo agent message_post OK: conv_id=%s channel_id=%s odoo_mail_message_id=%s agent_partner_id=%s",
+        conversation_id,
+        channel_id,
+        msg_id,
+        agent_partner_id,
+    )
     return {"channel_id": channel_id, "message_id": msg_id}
 
 
@@ -833,6 +1040,18 @@ async def _poll_odoo_to_receevi() -> None:
             client = get_odoo_client()
             loop = asyncio.get_event_loop()
             mappings = get_all_conversation_mappings()
+            if mappings:
+                logger.debug(
+                    "Odoo→Receevi poll: %d conversation(s) in mapping",
+                    len(mappings),
+                )
+
+            agent_partner_id = await loop.run_in_executor(
+                None,
+                lambda: client.get_odoo_user_partner_id(),
+            )
+            if not agent_partner_id:
+                continue
 
             for conv_id, data in mappings.items():
                 channel_id = data.get("channel_id")
@@ -843,17 +1062,37 @@ async def _poll_odoo_to_receevi() -> None:
                 last_id = get_last_message_id(conv_id)
                 messages = await loop.run_in_executor(
                     None,
-                    lambda cid=channel_id, pid=partner_id, lid=last_id: client.get_discuss_messages_since(
+                    lambda cid=channel_id, lid=last_id, aid=agent_partner_id: client.get_discuss_messages_since(
                         channel_id=cid,
                         min_id=lid,
-                        exclude_author_ids=[pid],
+                        author_partner_ids_must_be=[aid],
                     ),
                 )
 
+                if messages:
+                    logger.info(
+                        "Odoo→Receevi poll: conv_id=%s channel_id=%s last_odoo_msg_id=%s new_agent_rows=%d",
+                        conv_id,
+                        channel_id,
+                        last_id,
+                        len(messages),
+                    )
                 for msg in messages:
                     plain = strip_html(msg.get("body", ""))
                     if not plain.strip():
+                        logger.debug(
+                            "Odoo→Receevi skip empty body: odoo_mail_message_id=%s conv_id=%s",
+                            msg.get("id"),
+                            conv_id,
+                        )
                         continue
+                    logger.info(
+                        "Odoo→Receevi send: conv_id=%s odoo_mail_message_id=%s author_partner_id=%s preview=%r",
+                        conv_id,
+                        msg.get("id"),
+                        msg.get("author_id"),
+                        _log_preview(plain, 160),
+                    )
                     err = await send_receevi_message(
                         conversation_id=conv_id,
                         content=plain,
@@ -868,11 +1107,17 @@ async def _poll_odoo_to_receevi() -> None:
                     else:
                         set_last_message_id(conv_id, msg["id"])
                         _record_sent_to_chatwoot(conv_id, plain)
+                        logger.info(
+                            "Odoo→Receevi done: conv_id=%s odoo_mail_message_id=%s last_synced_id=%s",
+                            conv_id,
+                            msg["id"],
+                            msg["id"],
+                        )
 
         except asyncio.CancelledError:
             break
         except Exception:
-            pass
+            logger.exception("Odoo→Chatwoot poll loop error")
 
 
 if __name__ == "__main__":

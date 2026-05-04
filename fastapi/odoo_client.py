@@ -3,8 +3,10 @@ Odoo XML-RPC client for Discuss (mail.channel) and partners.
 Runs sync calls in a thread to work with FastAPI async endpoints.
 """
 import html
+import http.client
 import logging
 import re
+import threading
 import xmlrpc.client
 from typing import Dict, Any, Optional, List
 import os
@@ -49,6 +51,55 @@ class OdooClient:
         self.password = password or ODOO_PASSWORD
         self.uid: Optional[int] = None
         self.models: Optional[Any] = None
+        # xmlrpc.client reutiliza uma ligação HTTP; pedidos em paralelo (vários webhooks)
+        # provocam CannotSendRequest / ResponseNotReady. RLock: authenticate dentro de _execute_kw.
+        self._rpc_lock = threading.RLock()
+
+    def _reset_session(self) -> None:
+        """Drop cached XML-RPC session/proxy so next call can re-authenticate."""
+        self.uid = None
+        self.models = None
+
+    @staticmethod
+    def _is_transport_error(exc: Exception) -> bool:
+        """Return True when error indicates broken/stale HTTP/XML-RPC connection."""
+        if isinstance(exc, (OSError, ConnectionError, xmlrpc.client.ProtocolError, xmlrpc.client.ResponseError)):
+            return True
+        if isinstance(exc, (http.client.CannotSendRequest, http.client.ResponseNotReady)):
+            return True
+        msg = str(exc).lower()
+        return (
+            "connection refused" in msg
+            or "request-sent" in msg
+            or "cannotsendrequest" in msg
+            or "connection reset" in msg
+            or "timed out" in msg
+            or "response not ready" in msg
+            or msg == "idle"
+        )
+
+    def _execute_kw(self, model: str, method: str, args: List[Any], kwargs: Optional[Dict[str, Any]] = None) -> Any:
+        """
+        Execute Odoo XML-RPC method with one auto-reconnect retry for transport errors.
+        """
+        with self._rpc_lock:
+            if not self.uid and not self.authenticate():
+                raise RuntimeError("Odoo authentication failed")
+
+            try:
+                return self.models.execute_kw(
+                    self.db, self.uid, self.password, model, method, args, kwargs or {}
+                )
+            except Exception as e:
+                if not self._is_transport_error(e):
+                    raise
+                logger.warning("XML-RPC transport error; retrying once: %s", e)
+                self._reset_session()
+                if not self.authenticate():
+                    raise
+                return self.models.execute_kw(
+                    self.db, self.uid, self.password, model, method, args, kwargs or {}
+                )
 
     def get_odoo_user_partner_id(self) -> Optional[int]:
         """
@@ -58,15 +109,7 @@ class OdooClient:
         if not self.uid and not self.authenticate():
             return None
         try:
-            users = self.models.execute_kw(
-                self.db,
-                self.uid,
-                self.password,
-                "res.users",
-                "read",
-                [self.uid],
-                {"fields": ["partner_id"]},
-            )
+            users = self._execute_kw("res.users", "read", [self.uid], {"fields": ["partner_id"]})
             if users and users[0].get("partner_id"):
                 pid = users[0]["partner_id"]
                 return pid[0] if isinstance(pid, (list, tuple)) else pid
@@ -77,24 +120,27 @@ class OdooClient:
 
     def authenticate(self) -> Optional[int]:
         """Authenticate with Odoo. Returns uid or None."""
-        try:
-            common = xmlrpc.client.ServerProxy(
-                f"{self.url}/xmlrpc/2/common", allow_none=True
-            )
-            self.uid = common.authenticate(
-                self.db, self.username, self.password, {}
-            )
-            if self.uid:
-                self.models = xmlrpc.client.ServerProxy(
-                    f"{self.url}/xmlrpc/2/object", allow_none=True
+        with self._rpc_lock:
+            try:
+                common = xmlrpc.client.ServerProxy(
+                    f"{self.url}/xmlrpc/2/common", allow_none=True
                 )
-            return self.uid
-        except Exception as e:
-            logger.warning(
-                "Odoo auth failed: url=%s db=%s user=%s err=%s",
-                self.url, self.db, self.username, e,
-            )
-            return None
+                self.uid = common.authenticate(
+                    self.db, self.username, self.password, {}
+                )
+                if self.uid:
+                    self.models = xmlrpc.client.ServerProxy(
+                        f"{self.url}/xmlrpc/2/object", allow_none=True
+                    )
+                return self.uid
+            except Exception as e:
+                self.uid = None
+                self.models = None
+                logger.warning(
+                    "Odoo auth failed: url=%s db=%s user=%s err=%s",
+                    self.url, self.db, self.username, e,
+                )
+                return None
 
     def create_helpdesk_ticket(self, ticket_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -114,20 +160,17 @@ class OdooClient:
 
         # Try helpdesk.ticket first (Odoo Helpdesk module)
         try:
-            ticket_id = self.models.execute_kw(
-                self.db,
-                self.uid,
-                self.password,
+            ticket_id = self._execute_kw(
                 "helpdesk.ticket",
                 "create",
-                [
+                [[
                     {
                         "name": ticket_data.get("name", "Incoming ticket"),
                         "description": ticket_data.get("description") or "",
                         "partner_id": partner_id,
                         "team_id": 1,
                     }
-                ],
+                ]],
             )
             return {"id": ticket_id, "model": "helpdesk.ticket", "status": "created"}
         except Exception:
@@ -135,19 +178,16 @@ class OdooClient:
 
         # Fallback: project.task (Project module)
         try:
-            ticket_id = self.models.execute_kw(
-                self.db,
-                self.uid,
-                self.password,
+            ticket_id = self._execute_kw(
                 "project.task",
                 "create",
-                [
+                [[
                     {
                         "name": ticket_data.get("name", "Incoming ticket"),
                         "description": ticket_data.get("description") or "",
                         "partner_id": partner_id,
                     }
-                ],
+                ]],
             )
             return {"id": ticket_id, "model": "project.task", "status": "created"}
         except Exception as e:
@@ -171,18 +211,13 @@ class OdooClient:
 
         # Search for existing chat channel with this partner
         try:
-            channel_ids = self.models.execute_kw(
-                self.db,
-                self.uid,
-                self.password,
+            channel_ids = self._execute_kw(
                 "mail.channel",
                 "search",
-                [
-                    [
-                        ("channel_type", "=", "chat"),
-                        ("channel_partner_ids", "in", [partner_id]),
-                    ]
-                ],
+                [[
+                    ("channel_type", "=", "chat"),
+                    ("channel_partner_ids", "in", [partner_id]),
+                ]],
                 {"limit": 1},
             )
             if channel_ids:
@@ -190,24 +225,12 @@ class OdooClient:
                 # Backfill chatwoot_inbox_name if we have it and the channel doesn't
                 if inbox_name:
                     try:
-                        channels = self.models.execute_kw(
-                            self.db,
-                            self.uid,
-                            self.password,
-                            "mail.channel",
-                            "read",
-                            [channel_id],
-                            {"fields": ["chatwoot_inbox_name"]},
+                        channels = self._execute_kw(
+                            "mail.channel", "read", [channel_id], {"fields": ["chatwoot_inbox_name"]}
                         )
                         if channels and not channels[0].get("chatwoot_inbox_name"):
-                            self.models.execute_kw(
-                                self.db,
-                                self.uid,
-                                self.password,
-                                "mail.channel",
-                                "write",
-                                [channel_id],
-                                {"chatwoot_inbox_name": inbox_name},
+                            self._execute_kw(
+                                "mail.channel", "write", [channel_id], {"chatwoot_inbox_name": inbox_name}
                             )
                     except Exception:
                         pass
@@ -224,27 +247,13 @@ class OdooClient:
         if inbox_name:
             vals["chatwoot_inbox_name"] = inbox_name
         try:
-            channel_id = self.models.execute_kw(
-                self.db,
-                self.uid,
-                self.password,
-                "mail.channel",
-                "create",
-                [vals],
-            )
+            channel_id = self._execute_kw("mail.channel", "create", [vals])
             return {"channel_id": channel_id, "created": True}
         except Exception as e:
             if inbox_name and "chatwoot_inbox_name" in str(e).lower():
                 vals.pop("chatwoot_inbox_name", None)
                 try:
-                    channel_id = self.models.execute_kw(
-                        self.db,
-                        self.uid,
-                        self.password,
-                        "mail.channel",
-                        "create",
-                        [vals],
-                    )
+                    channel_id = self._execute_kw("mail.channel", "create", [vals])
                     return {"channel_id": channel_id, "created": True}
                 except Exception as e2:
                     logger.exception("create_or_get_discuss_channel failed: %s", e2)
@@ -270,10 +279,7 @@ class OdooClient:
 
         try:
             # Use message_post on the channel - supports author_id for external sender
-            msg_id = self.models.execute_kw(
-                self.db,
-                self.uid,
-                self.password,
+            msg_id = self._execute_kw(
                 "mail.channel",
                 "message_post",
                 [channel_id],
@@ -294,45 +300,36 @@ class OdooClient:
         channel_id: int,
         min_id: int,
         exclude_author_ids: Optional[List[int]] = None,
+        author_partner_ids_must_be: Optional[List[int]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Get messages in a channel with id > min_id.
-        exclude_author_ids: skip messages from these partners (e.g. the contact - we only want agent replies).
-        Returns list of {"id": int, "body": str, "author_id": int}.
+        exclude_author_ids: skip messages from these partners (legacy).
+        author_partner_ids_must_be: if set, only return messages authored by these partners
+        (use integration user's partner so contact/webhook posts are never pushed back to Chatwoot).
         """
         if not self.uid and not self.authenticate():
             return []
 
+        # Odoo 16.0 usa mail.channel; builds mais recentes podem usar discuss.channel
         domain = [
-            ("model", "=", "mail.channel"),
+            ("model", "in", ["mail.channel", "discuss.channel"]),
             ("res_id", "=", channel_id),
             ("id", ">", min_id),
             ("message_type", "=", "comment"),
         ]
-        if exclude_author_ids:
+        if author_partner_ids_must_be:
+            domain.append(("author_id", "in", author_partner_ids_must_be))
+        elif exclude_author_ids:
             domain.append(("author_id", "not in", exclude_author_ids))
 
         try:
-            msg_ids = self.models.execute_kw(
-                self.db,
-                self.uid,
-                self.password,
-                "mail.message",
-                "search",
-                [domain],
-                {"order": "id asc"},
-            )
+            msg_ids = self._execute_kw("mail.message", "search", [domain], {"order": "id asc"})
             if not msg_ids:
                 return []
 
-            msg_records = self.models.execute_kw(
-                self.db,
-                self.uid,
-                self.password,
-                "mail.message",
-                "read",
-                [msg_ids],
-                {"fields": ["id", "body", "author_id"]},
+            msg_records = self._execute_kw(
+                "mail.message", "read", [msg_ids], {"fields": ["id", "body", "author_id"]}
             )
             result = []
             for m in msg_records:
@@ -346,6 +343,11 @@ class OdooClient:
                 })
             return result
         except Exception:
+            logger.exception(
+                "get_discuss_messages_since failed channel_id=%s min_id=%s",
+                channel_id,
+                min_id,
+            )
             return []
 
     def _get_or_create_partner(
@@ -366,15 +368,7 @@ class OdooClient:
 
         if search_domain:
             try:
-                partner_ids = self.models.execute_kw(
-                    self.db,
-                    self.uid,
-                    self.password,
-                    "res.partner",
-                    "search",
-                    [search_domain],
-                    {"limit": 1},
-                )
+                partner_ids = self._execute_kw("res.partner", "search", [search_domain], {"limit": 1})
                 if partner_ids:
                     return partner_ids[0]
             except Exception:
@@ -387,14 +381,7 @@ class OdooClient:
         if phone:
             vals["phone"] = phone
         try:
-            partner_id = self.models.execute_kw(
-                self.db,
-                self.uid,
-                self.password,
-                "res.partner",
-                "create",
-                [vals],
-            )
+            partner_id = self._execute_kw("res.partner", "create", [vals])
             return partner_id
         except Exception:
             return False  # type: ignore[return-value]

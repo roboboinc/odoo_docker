@@ -29,3 +29,18 @@ Make sure to run PG Admin container then:
 1.2 psql -U odoo -d lv2 #lv2 as example db we want to fix
 1.3 DELETE FROM public.ir_attachment;
 1.4 Go to UI: Apps, search for Base and Upgrade
+
+
+Changed the version of chatwoot
+
+docker pull chatwoot/chatwoot:v4.0.1
+docker service update --force odoo_receevi-web
+docker service update --force odoo_receevi-sidekiq
+
+E prepara a base com a mesma imagem:
+
+docker run --rm -it \
+  --network traefik-network \
+  --env-file /root/odoo_docker/.env \
+  chatwoot/chatwoot:v4.0.1 \
+  bundle exec rails db:chatwoot_prepare

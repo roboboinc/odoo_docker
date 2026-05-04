@@ -8,36 +8,39 @@ O `.env` já deve ter as variáveis de integração. Confirma que existem:
 
 - `ODOO_URL`, `ODOO_DB=robobo`, `ODOO_USERNAME`, `ODOO_PASSWORD`
 - `RECEEVI_URL=https://oc.linhafala.org.mz`, `RECEEVI_FRONTEND_URL`, `RECEEVI_API_KEY`, `RECEEVI_ACCOUNT_ID`
+- **`RECEEVI_INTERNAL_URL`** (produção Docker/Swarm): URL da API Rails **dentro** da rede, ex. `http://receevi-web:3000`. O `docker-compose.yml` já define isto para o serviço `fastapi`. Sem isto, a FastAPI usava só `RECEEVI_URL` público e o **poll Odoo → Receevi** falhava muitas vezes (hairpin, TLS, DNS) — as respostas escritas no Odoo Discuss **não** chegavam ao Chatwoot.
 
 Preenche `RECEEVI_API_KEY` com o token do Chatwoot (Settings → Applications → New Access Token).
 
-### 1.1.1 Base de dados Receevi (Digital Ocean)
+### 1.1.1 Base de dados Receevi (Chatwoot / PostgreSQL local)
 
-Se o Receevi falhar com **`database "receevi_production" does not exist`**, a base ainda não foi criada no PostgreSQL. Cria-a assim:
+Em produção o Chatwoot liga-se ao **PostgreSQL da própria stack** (contentor na mesma rede que `receevi-web`), **não** ao cluster DigitalOcean onde estava a antiga **`receevi_production`** (descontinuada).
 
-**Opção A – Painel Digital Ocean**
+No `.env` deve constar, entre outras:
 
-1. Acede ao cluster PostgreSQL na Digital Ocean.
-2. Abre a consola SQL ou “Connection” / “Databases”.
-3. Cria uma nova base de dados chamada **`receevi_production`** (ou executa `CREATE DATABASE receevi_production;` se houver editor SQL).
+- `POSTGRES_HOST` — hostname do Postgres do Chatwoot (ex.: `chatwoot-postgres` ou o nome do serviço na rede Swarm)
+- `POSTGRES_DATABASE=receevi_prod`
+- `POSTGRES_USERNAME`, `POSTGRES_PASSWORD`, `POSTGRES_PORT`, `POSTGRES_SSLMODE` (em ligação interna costuma ser `disable`)
 
-**Opção B – Linha de comandos (psql)**
+A integração **FastAPI → Odoo** continua a usar a base Odoo **`robobo`** (`ODOO_DB=robobo` para `https://odoo.robobo.org`), independentemente do Postgres do Chatwoot.
+
+Se o Receevi falhar com **`database "receevi_prod" does not exist`**, cria a base no servidor PostgreSQL **do Chatwoot** (com o mesmo utilizador definido em `POSTGRES_USERNAME`), por exemplo:
 
 ```bash
-# Usa os valores do teu .env (host, porta 25060, user, password)
-PGPASSWORD="$POSTGRES_PASSWORD" psql -h db-postgresql-fra1-02359-do-user-3894697-0.b.db.ondigitalocean.com -p 25060 -U doadmin -d defaultdb -c "CREATE DATABASE receevi_production;"
+# Ajusta host, utilizador e rede ao teu ambiente (ex.: exec no contentor postgres do Chatwoot)
+psql -h "$POSTGRES_HOST" -p "${POSTGRES_PORT:-5432}" -U "$POSTGRES_USERNAME" -d postgres -c "CREATE DATABASE receevi_prod;"
 ```
 
-Substitui `AVNS_...` pela `POSTGRES_PASSWORD` do `.env`. Se o teu cluster usar outra base por defeito (ex.: `postgres`), troca `defaultdb` por essa.
-
-Depois de criar a base, **corre as migrations** antes de arrancar o servidor web (senão ocorre `relation "installation_configs" does not exist`):
+Depois **corre as migrations** antes de confiar no servidor web (senão ocorre `relation "installation_configs" does not exist`):
 
 ```bash
 cd /root/odoo_docker
 docker compose run --rm receevi-web bundle exec rails db:prepare
 ```
 
-Isto cria todas as tabelas do Chatwoot na base `receevi_production`. Se usas **Docker Swarm**, faz o deploy do stack em seguida (secção 1.2). Não uses `docker compose up` para produção quando o stack estiver em Swarm.
+Isto prepara o esquema do Chatwoot na base `receevi_prod`. Se usas **Docker Swarm**, faz o deploy do stack em seguida (secção 1.2). Não uses `docker compose up` para produção quando o stack estiver em Swarm.
+
+**Nota (cron Odoo 16 e `ir_module_module` em bases erradas):** com **`dbfilter`** definido no `odoo.conf`, o Odoo **não** usa `db_name` para listar bases: o `list_dbs()` interroga o PostgreSQL e devolve **todas** as bases cujo dono é o utilizador do Odoo. O **cron** percorre essa lista inteira — daí erros em `receevi_production`, `defaultdb`, etc. A correção usada neste projeto é **`db_name = lfc_final,robobo,maisvida`** e **sem** `dbfilter` no ficheiro; o isolamento por domínio mantém-se com **Traefik** (`X-Odoo-dbfilter`) e o módulo **`dbfilter_from_header`**. Se precisares de mais uma BD Odoo no mesmo contentor, acrescenta o nome em `db_name` (e o router Traefik correspondente). Como reforço no PostgreSQL, podes ainda revogar `CONNECT` em bases não-Odoo para o role do Odoo.
 
 ### 1.2 Produção com Docker Swarm
 
@@ -85,8 +88,17 @@ docker service logs odoo_receevi-sidekiq --tail 200
 
 docker service logs -f odoo_receevi-sidekiq
 
+docker service logs -f odoo_odoo or 
+
+docker service logs --tail 200 odoo_odoo
 #remove stack service
 docker stack rm odoo
+
+or docker stack rm odoo_receevi-web
+docker stack deploy -c docker-compose.yml odoo
+docker# docker service logs -f odoo_odoo
+
+docker service update --force traefik_traefik
 ```
 
 ### 1.2.1 Primeiro utilizador (admin) no Receevi
@@ -331,7 +343,9 @@ Confirma que `api`, `receevi` e `odoo` aparecem como "healthy" (ou que os erros 
 
 1. No Receevi, envia uma mensagem de teste num canal (ex.: WhatsApp ou Website).
 2. No Odoo Discuss (odoo.robobo.org), verifica se aparece uma conversa/canal ligado a essa conversa do Receevi e se a mensagem do contacto aparece no Discuss.
-3. Responde no Odoo Discuss; no Receevi deve aparecer a resposta do agente (o FastAPI faz polling Odoo → Receevi quando `RECEEVI_API_KEY` está definido).
+3. Responde no Odoo Discuss; no Receevi deve aparecer a resposta do agente (o FastAPI faz **polling** Odoo → Receevi quando `RECEEVI_API_KEY` está definido, a cada `DISCUSS_POLL_INTERVAL` segundos, por defeito 5).
+
+**Se o passo 3 falhar:** confirma `RECEEVI_INTERNAL_URL=http://receevi-web:3000` (ou o hostname real do serviço Chatwoot na overlay) no ambiente do contentor `fastapi`, rebuild/redeploy após alterar o código, e nos logs procura `Odoo→Chatwoot poll started` e `Odoo→Chatwoot:` ou `Odoo→Chatwoot send failed` / `poll loop error`.
 
 ### 3.3 Logs (se algo falhar)
 
@@ -390,7 +404,7 @@ Se o Receevi abre mas a página mostra **500 – Something went wrong** e nos lo
    - **Swarm:** `docker stack deploy -c docker-compose.yml odoo`
    - **Compose:** `docker compose up -d receevi-web receevi-sidekiq`
 
-4. Se o erro persistir, pode haver desalinhamento entre a versão do image (ex.: `chatwoot/chatwoot:latest`) e o esquema já criado noutra versão. Nesse caso, confirma que estás a usar o mesmo image em todos os ambientes e que `db:prepare` ou `db:migrate` foi executado **depois** de criar a base `receevi_production`.
+4. Se o erro persistir, pode haver desalinhamento entre a versão do image (ex.: `chatwoot/chatwoot:latest`) e o esquema já criado noutra versão. Nesse caso, confirma que estás a usar o mesmo image em todos os ambientes e que `db:prepare` ou `db:migrate` foi executado **depois** de criar a base `receevi_prod` (ou a base definida em `POSTGRES_DATABASE`).
 
 ---
 
@@ -415,6 +429,17 @@ o PostgreSQL gerido (ex.: Digital Ocean) está **sem conexões disponíveis**. O
 3. **Usar PgBouncer** à frente do PostgreSQL para fazer connection pooling (avançado; requer outro serviço).
 
 4. **Reiniciar os serviços** após alterações: `docker stack deploy -c docker-compose.yml odoo`. Depois de o Postgres ter slots livres, os jobs do Sidekiq (incl. envio de webhooks) voltam a correr.
+
+5. **Odoo Discuss sem atualização em tempo real (só após F5)**  
+   Quando o Postgres está saturado, o Odoo pode falhar no **bus** ao fazer `commit` de `mail.message` (liga extra à base `postgres`). Sem notificação do bus, o cliente Discuss não recebe o evento e só vês a mensagem nova após recarregar. Resolver o limite de conexões no cluster PostgreSQL (e alinhar pools Odoo / Receevi) devolve o comportamento em tempo real.
+
+---
+
+## 6b. Eco no Chatwoot (a mesma mensagem do website aparece como resposta “outgoing”)
+
+Causa típica: o **poll Odoo→Chatwoot** reenviava para a API mensagens que na verdade vinham do **contacto** (website), porque o cursor `last_message_id` não avançava após o webhook ou o `author_id` no Odoo não coincidia com o `partner_id` guardado no mapeamento.
+
+A FastAPI foi ajustada para: (1) **avançar `last_message_id`** após cada mensagem recebida do Receevi gravada no Odoo; (2) no poll, **só reencaminhar mensagens cujo autor é o partner do utilizador Odoo da integração** (`ODOO_USERNAME`), nunca as do contacto.
 
 ---
 
