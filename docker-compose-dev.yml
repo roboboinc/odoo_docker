@@ -1,5 +1,19 @@
 services:
-  web:
+  # Redis for caching and session management
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --requirepass redis_password
+    volumes:
+      - redis_data:/data
+    networks:
+      - internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  odoo:
     image: odoo:16.0
     platform: linux/amd64
     depends_on:
@@ -54,7 +68,7 @@ services:
     #   - "traefik.http.routers.odoo.middlewares=odoo-headers"
 
   db:
-    image: postgres:16
+    image: pgvector/pgvector:pg16
     platform: linux/amd64
     environment:
       - POSTGRES_DB=postgres
@@ -100,10 +114,65 @@ services:
     networks:
       - internal
 
+  # Receevi (Chatwoot Community Edition) - Open Source Omnichannel Platform
+  receevi-web:
+    image: chatwoot/chatwoot:latest
+    depends_on:
+      - db
+      - redis
+    ports:
+      - "3001:3000"
+    env_file:
+        - .env
+    volumes:
+      - receevi_data:/app/storage
+    networks:
+      - internal
+    restart: unless-stopped
+    command: ["bundle", "exec", "rails", "s", "-p", "3000", "-b", "0.0.0.0"]
+
+  # Receevi Sidekiq Worker
+  receevi-sidekiq:
+    image: chatwoot/chatwoot:latest
+    depends_on:
+      - db
+      - redis
+    env_file:
+        - .env
+    volumes:
+      - receevi_data:/app/storage
+    networks:
+      - internal
+    restart: unless-stopped
+    command: ["bundle", "exec", "sidekiq", "-C", "config/sidekiq.yml"]
+
+  # FastAPI Integration Service
+  fastapi:
+    build: ./fastapi
+    ports:
+      - "8001:8000"
+    depends_on:
+      - db
+      - redis
+      - receevi-web
+      - odoo
+    env_file:
+        - .env
+    volumes:
+      - ./fastapi:/app
+    networks:
+      - internal
+    restart: unless-stopped
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
 volumes:
   odoo-web-data:
     driver: local
   odoo-db-data:
+    driver: local
+  redis_data:
+    driver: local
+  receevi_data:
     driver: local
 
 secrets:
